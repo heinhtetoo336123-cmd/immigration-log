@@ -1,0 +1,6 @@
+{
+  "name": "Immigration Log System",
+  "description": "Comprehensive immigration logistics and tracking system - Version 10 with Form C registration, advanced analytics, offline fail-safe, and master database integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

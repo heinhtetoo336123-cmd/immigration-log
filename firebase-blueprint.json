@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "records": {
+      "title": "Immigration Records",
+      "description": "Main immigration log records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "passport": { "type": "string" },
+        "fullname": { "type": "string" },
+        "gender": { "type": "string" },
+        "nationality": { "type": "string" },
+        "address": { "type": "string" },
+        "stayDescription": { "type": "string" },
+        "visaType": { "type": "string" },
+        "vehicleInfo": { "type": "string" },
+        "stayFrom": { "type": "string" },
+        "stayTo": { "type": "string" },
+        "totalDays": { "type": "string" },
+        "arrivedFrom": { "type": "string" },
+        "departedTo": { "type": "string" },
+        "broughtBy": { "type": "string" },
+        "contactDetails": { "type": "string" },
+        "officialName": { "type": "string" },
+        "officialTitle": { "type": "string" },
+        "mode": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "passport"]
+    },
+    "tempRecords": {
+      "title": "Temporary TEH Records",
+      "description": "Temporary stay logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "passport": { "type": "string" },
+        "fullname": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "passport"]
+    },
+    "masterData": {
+      "title": "Master References",
+      "description": "Master list for company, address, vehicle, etc.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "linkedValue": { "type": "string" }
+      },
+      "required": ["id", "name", "type"]
+    },
+    "checkingHistory": {
+      "title": "Checking History",
+      "description": "Verification history logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "passport": { "type": "string" },
+        "fullname": { "type": "string" },
+        "status": { "type": "string" },
+        "timestamp": { "type": "string" }
+      }
+    },
+    "dossierHistory": {
+      "title": "Dossier Records",
+      "description": "Dossier entry logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "passport": { "type": "string" },
+        "fullname": { "type": "string" }
+      }
+    },
+    "appData": {
+      "title": "App Sync Data",
+      "description": "Synced store documents for full state backup and real-time sync",
+      "type": "object",
+      "properties": {
+        "records": { "type": "array" },
+        "tempRecords": { "type": "array" },
+        "masterData": { "type": "array" },
+        "vehicleSummaries": { "type": "array" },
+        "checkingHistory": { "type": "array" },
+        "dossierHistory": { "type": "array" },
+        "activityLogs": { "type": "array" }
+      }
+    }
+  }
+}

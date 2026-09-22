@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#2C6CB0" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ImmigrationLogs" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/icon-192.svg" />
+    <link rel="apple-touch-icon" href="/icon-192.svg" />
+    <meta name="description" content="Comprehensive immigration logistics and tracking system - Version 10 with Form C registration, advanced analytics, offline fail-safe, and master database integration." />
+    <meta property="og:title" content="Immigration Log System" />
+    <meta property="og:description" content="Comprehensive immigration logistics and tracking system - Version 10 with Form C registration, advanced analytics, offline fail-safe, and master database integration." />
+    <title>Immigration Log System</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #0f172a;
+        color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+      .initial-loader-wrapper {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at 50% 30%, #1e293b 0%, #0f172a 100%);
+        padding: 24px;
+        text-align: center;
+        z-index: 99999;
+      }
+      .initial-logo-box {
+        width: 72px;
+        height: 72px;
+        background: rgba(44, 108, 176, 0.25);
+        border: 2px solid rgba(59, 130, 246, 0.4);
+        border-radius: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        animation: logoPulse 2s infinite ease-in-out;
+      }
+      .initial-title {
+        font-size: 20px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin: 0 0 8px 0;
+        color: #f8fafc;
+      }
+      .initial-sub {
+        font-size: 12px;
+        color: #94a3b8;
+        font-weight: 600;
+        margin: 0 0 20px 0;
+        max-width: 320px;
+        line-height: 1.5;
+      }
+      .initial-bar-bg {
+        width: 220px;
+        height: 6px;
+        background: #334155;
+        border-radius: 999px;
+        overflow: hidden;
+        position: relative;
+        margin-bottom: 16px;
+      }
+      .initial-bar-fill {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        background: linear-gradient(90deg, #3b82f6, #6366f1, #10b981);
+        border-radius: 999px;
+        animation: progressSlide 1.5s infinite ease-in-out;
+      }
+      .initial-status {
+        font-size: 11px;
+        font-weight: 700;
+        color: #38bdf8;
+        letter-spacing: 0.5px;
+        margin: 0;
+      }
+      .initial-mode-tag {
+        display: inline-block;
+        margin-top: 14px;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        font-size: 10px;
+        color: #cbd5e1;
+        font-weight: 700;
+      }
+      @keyframes logoPulse {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.06); opacity: 0.85; }
+      }
+      @keyframes progressSlide {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <!-- Instant Offline / Online Initial Waiting Screen (Replaced automatically when React mounts) -->
+      <div class="initial-loader-wrapper">
+        <div class="initial-logo-box">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+        </div>
+        <h1 class="initial-title">Immigration Log System</h1>
+        <p class="initial-sub">Myeik Division • Second Division Logistics & Stay Tracking System</p>
+        <div class="initial-bar-bg">
+          <div class="initial-bar-fill"></div>
+        </div>
+        <p class="initial-status">စနစ်ဒေတာများ စတင်ပြင်ဆင်နေပါသည် (Loading System...)</p>
+        <span class="initial-mode-tag">Offline-First • Local Database Storage Active</span>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
