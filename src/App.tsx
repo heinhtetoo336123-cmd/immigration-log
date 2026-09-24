@@ -69,7 +69,10 @@ import {
   ShieldAlert,
   Maximize2,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
+  Server,
+  UploadCloud,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import html2canvas from 'html2canvas';
@@ -89,6 +92,7 @@ import { DobNumpadInput } from './components/DobNumpadInput';
 import { StayPeriodInput } from './components/StayPeriodInput';
 import { IndividualSearch } from './components/IndividualSearch';
 import { CounterCheckModal } from './components/CounterCheckModal';
+import { CloudSyncStatusModal } from './components/CloudSyncStatusModal';
 import { WatchList } from './components/WatchList';
 import { CustomReportTable } from './components/CustomReportTable';
 import { ActivityLogView } from './components/ActivityLogView';
@@ -5342,17 +5346,17 @@ const MasterDB = ({
         <div className="flex items-center gap-3">
           <Database className="text-blue-600" size={24} />
           <div>
-            <h3 className="text-lg font-black uppercase">Master Database & Cloud Synchronization</h3>
-            <p className="text-xs text-slate-500 font-bold">Cloud Data Sync (Upload / Download) & System File Backup</p>
+            <h3 className="text-lg font-black uppercase">Master Database Management</h3>
+            <p className="text-xs text-slate-500 font-bold">Category Labels, Auto-Extraction & Cloud Server Synchronization</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={handleSyncMasterFromLatestRecords}
             className="btn bg-cyan-600 hover:bg-cyan-700 text-white text-[11px] font-black uppercase px-4 py-2 flex items-center gap-1.5 shadow-md shadow-cyan-100 cursor-pointer"
-            title="နောက်ဆုံးထည့်သွင်းထားသော မှတ်တမ်းများမှ Master Data နှင့် Linked Value များကို Auto-Sync ပြုလုပ်မည်"
+            title="လက်ရှိမှတ်တမ်းများထဲမှ နိုင်ငံသား၊ ဗီဇာ၊ ဟိုတယ် စသည့် မာစတာအချက်အလက်များကို အလိုအလျောက် စုစည်းထုတ်ယူမည် (ဆာဗာ Sync မဟုတ်ပါ)"
           >
-            <RefreshCw size={14} /> Sync from Latest Records
+            <Sparkles size={14} /> Auto-Extract from Records
           </button>
           <button
             onClick={() => {
@@ -5371,9 +5375,9 @@ const MasterDB = ({
             onClick={handleMasterDataUnifiedSync} 
             disabled={isMasterSyncing}
             className={`btn ${isMasterSyncing ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'} text-white text-[11px] font-black uppercase px-4 py-2 flex items-center gap-1.5 shadow-md shadow-blue-100`}
-            title="Master Data အား Cloud နှင့် တိုက်ရိုက် Sync ပြုလုပ်မည် (Upload & Download)"
+            title="ဒေတာအားလုံး (မှတ်တမ်းများ၊ မာစတာဒေတာ၊ စစ်ဆေးမှုများ) ကို Cloud Server သို့ တိုက်ရိုက် Sync ပြုလုပ်မည်"
           >
-            <RefreshCw size={14} className={isMasterSyncing ? "animate-spin" : ""} /> {isMasterSyncing ? "Syncing..." : "Sync Master Data"}
+            <UploadCloud size={14} className={isMasterSyncing ? "animate-bounce" : ""} /> {isMasterSyncing ? "Syncing All Data..." : "Cloud Sync All Data"}
           </button>
           <button onClick={backupCombinedJSON} className="btn bg-indigo-600 text-white hover:bg-indigo-700 text-[11px] uppercase px-4 py-2 flex items-center gap-1.5 border border-indigo-500 shadow-md shadow-indigo-100 cursor-pointer">
             <Download size={14} /> Combined Backup
@@ -8745,6 +8749,7 @@ const mergeByUniqueKey = <T extends Record<string, any>>(localArr: T[], remoteAr
 export default function App() {
     const [isQuotaExhausted, setIsQuotaExhausted] = useState<boolean>(() => getIsQuotaExhausted());
     const [isAutoSyncing, setIsAutoSyncing] = useState<boolean>(false);
+    const [isSyncModalOpen, setIsSyncModalOpen] = useState<boolean>(false);
 
     const [uploadErrorAlarm, setUploadErrorAlarm] = useState<{
       show: boolean;
@@ -9057,20 +9062,24 @@ export default function App() {
       }
     };
 
-    const handleFetchDataFromCloud = async (force: boolean = false) => {
+    const handleFetchDataFromCloud = async (force: boolean = false, silent: boolean = false) => {
       if (!isOnline) {
-        showToast("⚠️ အင်တာနက် လိုင်းမရှိသေးပါ။ လတ်တလော Local DB မှ အချက်အလက်များကို အသုံးပြုနေပါသည်");
+        if (!silent) showToast("⚠️ အင်တာနက် လိုင်းမရှိသေးပါ။ လတ်တလော Local DB မှ အချက်အလက်များကို အသုံးပြုနေပါသည်");
         return;
       }
       try {
         isRemoteSyncingRef.current = true;
-        setDownloadProgress({ isDownloading: true, percent: 5, currentCol: 'Metadata Check' });
+        if (!silent) {
+          setDownloadProgress({ isDownloading: true, percent: 5, currentCol: 'Metadata Check' });
+        }
         
         // Smart fetch: check Firestore collections for updates
         const updatedCollections = await checkAndFetchUpdatedCollections([
           'records', 'tempRecords', 'masterData', 'vehicleSummaries', 'checkingHistory', 'dossierHistory', 'watchList'
         ], force, (pct, col) => {
-          setDownloadProgress({ isDownloading: true, percent: pct, currentCol: col });
+          if (!silent) {
+            setDownloadProgress({ isDownloading: true, percent: pct, currentCol: col });
+          }
         });
 
         let updatedAny = false;
@@ -9176,23 +9185,57 @@ export default function App() {
 
         setIsCloudSynced(true);
         updateLastSyncTimestamp();
-        if (updatedAny || fetchedAny) {
-          showToast(" Cloud မှ အချက်အလက်သစ်များ အောင်မြင်စွာ ရယူပြီးပါပြီ");
+        if (silent) {
+          if (updatedAny) {
+            showToast("📱 အခြားစက်မှ အချက်အလက်သစ်များ ရောက်ရှိပါပြီ (Auto-Synced from Server)");
+          }
         } else {
-          showToast(" Cloud အချက်အလက်နှင့် လက်ရှိ Local အချက်အလက်များ တူညီနေပါသည်");
+          if (updatedAny || fetchedAny) {
+            showToast(" Cloud မှ အချက်အလက်သစ်များ အောင်မြင်စွာ ရယူပြီးပါပြီ");
+          } else {
+            showToast(" Cloud အချက်အလက်နှင့် လက်ရှိ Local အချက်အလက်များ တူညီနေပါသည်");
+          }
         }
       } catch (err) {
         console.error("Fetch cloud data error:", err);
-        showToast("⚠️ Local Data ကို ဆက်လက်အသုံးပြုနေပါသည်");
+        if (!silent) showToast("⚠️ Local Data ကို ဆက်လက်အသုံးပြုနေပါသည်");
       } finally {
         setIsInitialSyncing(false);
-        setDownloadProgress({ isDownloading: false, percent: 100, currentCol: 'Complete' });
-        setTimeout(() => {
-          setDownloadProgress(null);
+        if (!silent) {
+          setDownloadProgress({ isDownloading: false, percent: 100, currentCol: 'Complete' });
+          setTimeout(() => {
+            setDownloadProgress(null);
+            isRemoteSyncingRef.current = false;
+          }, 1200);
+        } else {
           isRemoteSyncingRef.current = false;
-        }, 1200);
+        }
       }
     };
+
+    // 25-Second Periodic Background Smart Poll & Window Focus Sync (Auto-receives updates from other devices/phones)
+    useEffect(() => {
+      if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
+
+      const backgroundSyncInterval = setInterval(() => {
+        if (isOnline && document.visibilityState === 'visible' && !isRemoteSyncingRef.current && !isAutoSyncing) {
+          handleFetchDataFromCloud(false, true).catch(() => {});
+        }
+      }, 25000);
+
+      const handleFocus = () => {
+        if (isOnline && !isRemoteSyncingRef.current && !isAutoSyncing) {
+          handleFetchDataFromCloud(false, true).catch(() => {});
+        }
+      };
+
+      window.addEventListener('focus', handleFocus);
+
+      return () => {
+        clearInterval(backgroundSyncInterval);
+        window.removeEventListener('focus', handleFocus);
+      };
+    }, [cloudAuthUser, isOnline, isAutoSyncing]);
 
     // Startup Launch Sequence: Check if Cloud Auth exists
     useEffect(() => {
@@ -10482,14 +10525,18 @@ export default function App() {
       if (newRecord.formC?.reporterName) syncMaster(newRecord.formC.reporterName, 'Reporter');
       if (newRecord.formC?.reporterPhone) syncMaster(newRecord.formC.reporterPhone, 'Phone');
 
+      const activeDevName = cloudAuthUser?.deviceName || (typeof navigator !== 'undefined' && navigator.userAgent.includes('Mobile') ? 'Mobile Phone' : 'Desktop Device');
       const recordToSave: ImmRecord = {
         ...newRecord,
         syncStatus: 'pending_sync',
+        createdDevice: activeDevName,
         updatedAt: new Date().toISOString()
       };
 
+      let nextRecordsList: ImmRecord[] = [];
       if (editTarget) {
-        setRecords(prev => prev.map(r => r.id === editTarget.id ? recordToSave : r));
+        nextRecordsList = records.map(r => r.id === editTarget.id ? recordToSave : r);
+        setRecords(nextRecordsList);
         setEditTarget(null);
         logActivity({
           action: 'UPDATE',
@@ -10500,7 +10547,8 @@ export default function App() {
           details: `Updated ${recordToSave.logType || 'FFE'} [${recordToSave.mode}] record #${recordToSave.id} for Passport ${recordToSave.passport} (${recordToSave.fullname || 'N/A'}, ${recordToSave.nationality || 'N/A'}) - Flight/Vehicle: ${recordToSave.vehicleInfo || '-'}`
         });
       } else {
-        setRecords(prev => [recordToSave, ...prev]);
+        nextRecordsList = [recordToSave, ...records];
+        setRecords(nextRecordsList);
         // Delete from temporary entries if passport matches
         setTempRecords(prev => prev.filter(tr => tr && tr.passport && typeof tr.passport === 'string' && tr.passport.toUpperCase() !== recordToSave.passport.toUpperCase()));
         logActivity({
@@ -10511,6 +10559,24 @@ export default function App() {
           targetId: recordToSave.passport,
           details: `New entry created: ${recordToSave.logType || 'FFE'} [${recordToSave.mode}] Passport ${recordToSave.passport} (${recordToSave.fullname || 'N/A'}, ${recordToSave.nationality || 'N/A'}) via ${recordToSave.vehicleInfo || '-'}`
         });
+      }
+
+      // Direct instant upload to Cloud Server for zero-confusion verification
+      if (isOnline) {
+        showToast("📡 Cloud Server ပေါ်သို့ တိုက်ရိုက် ပို့ဆောင်နေပါသည်...");
+        saveCollectionToFirestore('records', nextRecordsList, true, true).then((ok) => {
+          if (ok) {
+            const confirmedAt = new Date().toISOString();
+            setRecords(prev => prev.map(r => (r.id === recordToSave.id || (r.passport === recordToSave.passport && r.timestamp === recordToSave.timestamp)) ? { ...r, syncStatus: 'synced', serverSyncedAt: confirmedAt } : r));
+            showToast("✓ Cloud Server ပေါ်သို့ အောင်မြင်စွာ ရောက်ရှိ သိမ်းဆည်းပြီးပါပြီ (Server Verified ✓)");
+          } else {
+            showToast("💾 ဖုန်းထဲတွင် သိမ်းဆည်းပြီးပါပြီ (လတ်တလော ဆာဗာမရောက်သေးပါ - Auto-Sync ပို့ပါမည်)");
+          }
+        }).catch(() => {
+          showToast("💾 ဖုန်းထဲတွင် သိမ်းဆည်းပြီးပါပြီ (လတ်တလော ဆာဗာမရောက်သေးပါ - Auto-Sync ပို့ပါမည်)");
+        });
+      } else {
+        showToast("💾 အင်တာနက်မရှိပါ - ဖုန်းထဲတွင် လုံခြုံစွာသိမ်းထားပြီး လိုင်းရပါက Auto-Sync ပြုလုပ်ပေးပါမည်");
       }
 
       // Automatically sync checkpoint status to checkingHistory as checked
@@ -10779,12 +10845,10 @@ export default function App() {
           <div className="relative">
             <button
               onClick={() => {
-                setIsStatusPopoverOpen(!isStatusPopoverOpen);
-                setIsUserDropdownOpen(false);
-                setIsSettingsOpen(false);
+                setIsSyncModalOpen(true);
               }}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-black tracking-wide border backdrop-blur-sm transition-all cursor-pointer shadow-xs"
-              title="Click to view Cloud & System Status"
+              title="Click to view Cloud Server & All Devices Sync Hub"
             >
               {downloadProgress?.isDownloading ? (
                 <div className="flex items-center gap-1.5 bg-cyan-500/25 text-cyan-200 border-cyan-400/50 px-2 py-0.5 rounded-lg animate-pulse" title={`Cloud Data Downloading (${downloadProgress.currentCol})`}>
@@ -10792,36 +10856,40 @@ export default function App() {
                   <span className="font-extrabold text-[10px]">Cloud Down: <span className="font-mono text-cyan-200">{downloadProgress.percent}%</span></span>
                 </div>
               ) : !isOnline ? (
-              <div className="flex items-center gap-1 bg-rose-500/20 text-rose-300 border-rose-400/30 px-1.5 py-0.5 rounded-lg">
-                <WifiOff size={11} className="text-rose-400" />
-                <span className="hidden xs:inline">Offline</span>
-              </div>
-            ) : isAutoSyncing ? (
-              <div className="flex items-center gap-1 bg-blue-500/20 text-blue-200 border-blue-400/40 px-1.5 py-0.5 rounded-lg animate-pulse" title="Cloud သို့ ချက်ချင်း Sync ပြုလုပ်နေပါသည် (Instant Cloud Sync)">
-                <RefreshCw size={11} className="animate-spin text-blue-300" />
-                <span className="hidden xs:inline">Syncing...</span>
-              </div>
-            ) : isCloudSynced ? (
-              <div className="flex items-center gap-1 bg-emerald-500/20 text-emerald-300 border-emerald-400/30 px-1.5 py-0.5 rounded-lg" title={lastSyncTime ? `နောက်ဆုံး Cloud Sync ဖိုင်၏ အချိန်: ${lastSyncTime}` : 'Cloud Synced'}>
-                <CheckCircle2 size={11} className="text-emerald-400" />
-                <span className="hidden xs:inline">Cloud Synced</span>
-                {lastSyncTime && <span className="hidden md:inline text-[9px] font-mono text-emerald-200/80 ml-0.5">({lastSyncTime.split(' ')[1] || lastSyncTime})</span>}
-              </div>
-            ) : (
-              <div className="flex items-center gap-1 bg-amber-500/20 text-amber-300 border-amber-400/30 px-1.5 py-0.5 rounded-lg">
-                <HardDrive size={11} className="text-amber-400" />
-                <span className="hidden xs:inline">Saved Locally</span>
-              </div>
-            )}
+                <div className="flex items-center gap-1 bg-rose-500/20 text-rose-300 border-rose-400/30 px-1.5 py-0.5 rounded-lg">
+                  <WifiOff size={11} className="text-rose-400" />
+                  <span className="hidden xs:inline">Offline</span>
+                </div>
+              ) : isAutoSyncing ? (
+                <div className="flex items-center gap-1 bg-blue-500/20 text-blue-200 border-blue-400/40 px-1.5 py-0.5 rounded-lg animate-pulse" title="Cloud သို့ ချက်ချင်း Sync ပြုလုပ်နေပါသည် (Instant Cloud Sync)">
+                  <RefreshCw size={11} className="animate-spin text-blue-300" />
+                  <span className="hidden xs:inline">Syncing...</span>
+                </div>
+              ) : records.some(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed') ? (
+                <div className="flex items-center gap-1 bg-amber-500/25 text-amber-200 border-amber-400/50 px-2 py-0.5 rounded-lg animate-pulse" title="ဆာဗာသို့ မရောက်သေးသော စာရင်းများ ရှိပါသည် (နှိပ်၍ စစ်ဆေး/ပို့ဆောင်ပါ)">
+                  <Clock size={11} className="text-amber-300" />
+                  <span>{records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length} ခု မရောက်သေး</span>
+                </div>
+              ) : isCloudSynced ? (
+                <div className="flex items-center gap-1 bg-emerald-500/20 text-emerald-300 border-emerald-400/30 px-1.5 py-0.5 rounded-lg" title={lastSyncTime ? `နောက်ဆုံး Cloud Sync ဖိုင်၏ အချိန်: ${lastSyncTime}` : 'Cloud Synced'}>
+                  <CheckCircle2 size={11} className="text-emerald-400" />
+                  <span className="hidden xs:inline">Server: Synced ({records.length})</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 bg-amber-500/20 text-amber-300 border-amber-400/30 px-1.5 py-0.5 rounded-lg">
+                  <HardDrive size={11} className="text-amber-400" />
+                  <span className="hidden xs:inline">Saved Locally</span>
+                </div>
+              )}
 
-            {isQuotaExhausted && (
-              <span className="bg-rose-500/30 text-rose-200 border border-rose-400/50 px-1.5 py-0.5 rounded-md text-[9px] font-black flex items-center gap-1 animate-pulse">
-                <AlertCircle size={9} />
-                <span>Quota</span>
-              </span>
-            )}
-            <ChevronDown size={11} className={`text-slate-300 transition-transform ${isStatusPopoverOpen ? 'rotate-180' : ''}`} />
-          </button>
+              {isQuotaExhausted && (
+                <span className="bg-rose-500/30 text-rose-200 border border-rose-400/50 px-1.5 py-0.5 rounded-md text-[9px] font-black flex items-center gap-1 animate-pulse">
+                  <AlertCircle size={9} />
+                  <span>Quota</span>
+                </span>
+              )}
+              <ChevronDown size={11} className={`text-slate-300 transition-transform ${isStatusPopoverOpen ? 'rotate-180' : ''}`} />
+            </button>
 
           {/* STATUS POPOVER PANEL */}
           <AnimatePresence>
@@ -10872,6 +10940,16 @@ export default function App() {
                   </div>
                 </div>
 
+                <button
+                  onClick={() => {
+                    setIsStatusPopoverOpen(false);
+                    setIsSyncModalOpen(true);
+                  }}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-2 px-3 rounded-xl text-[11px] uppercase flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                >
+                  <Server size={13} /> Open Server & Devices Monitor
+                </button>
+
                 {isQuotaExhausted && (
                   <button
                     onClick={() => {
@@ -10891,6 +10969,20 @@ export default function App() {
 
         {/* RIGHT ACTION CONTROLS & PROFILE */}
         <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* SERVER & DEVICES MONITOR BUTTON */}
+          <button
+            onClick={() => setIsSyncModalOpen(true)}
+            className="bg-white/10 hover:bg-white/20 border border-white/15 px-2.5 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer text-xs font-bold text-slate-100 shadow-xs"
+            title="ဆာဗာဒေတာနှင့် ချိတ်ဆက်ထားသော စက်များ စစ်ဆေးရန် (Server & Devices Monitor)"
+          >
+            <Server size={13} className="text-cyan-300" />
+            <span className="hidden md:inline">Server & Devices</span>
+            {records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length > 0 && (
+              <span className="bg-amber-500 text-slate-900 text-[9px] font-black px-1.5 py-0.2 rounded-full">
+                {records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length}
+              </span>
+            )}
+          </button>
           {/* OFFICER PROFILE AVATAR & DROPDOWN */}
           <div className="relative">
             <button
@@ -12343,14 +12435,17 @@ export default function App() {
                          <span className={`px-2 py-0.2 rounded-md text-[9px] font-black tracking-wider uppercase ${r.mode === 'IN' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-orange-100 text-orange-800 border border-orange-300'}`}>
                            {r.mode}
                          </span>
-                         {r.syncStatus === 'upload_failed' && (
-                           <span className="px-1.5 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-0.5" title="Upload Failed">
+                         {r.syncStatus === 'upload_failed' ? (
+                           <span className="px-1.5 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-0.5 shadow-2xs" title="⚠️ Server သို့ မရောက်သေးပါ (Upload Failed)">
                              <AlertCircle size={9} className="text-rose-600 animate-pulse"/> Failed
                            </span>
-                         )}
-                         {r.syncStatus === 'pending_sync' && (
-                           <span className="px-1.5 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-0.5" title="Pending Sync">
-                             <Clock size={9} className="text-amber-600"/> Pending
+                         ) : r.syncStatus === 'pending_sync' ? (
+                           <span className="px-1.5 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-0.5 shadow-2xs" title="⏳ Server သို့ မရောက်သေးပါ (ဖုန်းထဲတွင် သိမ်းထားသည်)">
+                             <Clock size={9} className="text-amber-600"/> Pending Upload
+                           </span>
+                         ) : (
+                           <span className="px-1.5 py-0.2 rounded text-[8px] font-black tracking-wider bg-emerald-100 text-emerald-900 border border-emerald-300 flex items-center gap-0.5 shadow-2xs" title={`✓ Server ပေါ်ရောက်ရှိပြီး (Cloud Synced)${r.createdDevice ? ` • by ${r.createdDevice}` : ''}${r.serverSyncedAt ? ` • ${new Date(r.serverSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`}>
+                             <CheckCircle2 size={9} className="text-emerald-600"/> Server Synced
                            </span>
                          )}
                       </div>
@@ -12440,14 +12535,17 @@ export default function App() {
                           <span className={`px-1.5 py-0.2 rounded text-[9px] font-black tracking-tighter ${r.mode === 'IN' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-orange-100 text-orange-800 border border-orange-200'}`}>
                             {r.mode}
                           </span>
-                          {r.syncStatus === 'upload_failed' && (
+                          {r.syncStatus === 'upload_failed' ? (
                             <span className="px-1 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-0.5" title="⚠️ Upload Failed: Saved in Local DB">
                               <AlertCircle size={8} className="text-rose-600 animate-pulse"/> Failed
                             </span>
-                          )}
-                          {r.syncStatus === 'pending_sync' && (
-                            <span className="px-1 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-0.5" title="⏱️ Pending Cloud Upload">
+                          ) : r.syncStatus === 'pending_sync' ? (
+                            <span className="px-1 py-0.2 rounded text-[8px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-0.5" title="⏱️ Pending Cloud Upload (ဆာဗာသို့ မရောက်သေးပါ)">
                               <Clock size={8} className="text-amber-600"/> Pending
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.2 rounded text-[8px] font-black tracking-tighter bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-0.5" title={`✓ Server ပေါ်ရောက်ရှိပြီး (Cloud Synced)${r.createdDevice ? ` • by ${r.createdDevice}` : ''}${r.serverSyncedAt ? ` • ${new Date(r.serverSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`}>
+                              <CheckCircle2 size={8} className="text-emerald-600" /> Synced
                             </span>
                           )}
                         </div>
@@ -12588,14 +12686,17 @@ export default function App() {
                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${mobileDetailRecord.mode === 'IN' ? 'bg-emerald-100 text-emerald-800' : 'bg-orange-100 text-orange-800'}`}>
                              {mobileDetailRecord.mode}
                            </span>
-                           {mobileDetailRecord.syncStatus === 'upload_failed' && (
+                           {mobileDetailRecord.syncStatus === 'upload_failed' ? (
                              <span className="text-[9px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
-                               Upload Failed
+                               ⚠️ Upload Failed
                              </span>
-                           )}
-                           {mobileDetailRecord.syncStatus === 'pending_sync' && (
+                           ) : mobileDetailRecord.syncStatus === 'pending_sync' ? (
                              <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                               Pending Sync
+                               ⏳ Pending Upload (Local Only)
+                             </span>
+                           ) : (
+                             <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                               <CheckCircle2 size={10} /> Server Synced
                              </span>
                            )}
                         </div>
@@ -12647,9 +12748,9 @@ export default function App() {
                            handleManualSync();
                            setMobileDetailRecord(null);
                          }}
-                         className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-2.5 rounded-2xl uppercase text-xs flex items-center justify-center gap-2 shadow-sm"
+                         className={`w-full ${mobileDetailRecord.syncStatus === 'upload_failed' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700'} text-white font-black py-2.5 rounded-2xl uppercase text-xs flex items-center justify-center gap-2 shadow-sm cursor-pointer`}
                        >
-                         <RefreshCw size={14} /> Retry Upload to Cloud
+                         <UploadCloud size={14} /> {mobileDetailRecord.syncStatus === 'upload_failed' ? 'Retry Upload to Cloud Server' : 'Upload to Cloud Server Now (ဆာဗာသို့ ပို့မည်)'}
                        </button>
                      )}
                      <div className={`grid ${isViewer ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
@@ -15450,6 +15551,26 @@ export default function App() {
       setRecords={setRecords}
       showToast={showToast}
       onEditRecord={startEdit}
+    />
+
+    {/* Cloud Server & Devices Sync Hub Modal */}
+    <CloudSyncStatusModal
+      isOpen={isSyncModalOpen}
+      onClose={() => setIsSyncModalOpen(false)}
+      isOnline={isOnline}
+      isAutoSyncing={isAutoSyncing}
+      isCloudSynced={isCloudSynced}
+      lastSyncTime={lastSyncTime}
+      isQuotaExhausted={isQuotaExhausted}
+      cloudAuthUser={cloudAuthUser}
+      deviceSessions={deviceSessions}
+      records={records}
+      masterDataCount={masterData.length}
+      tempRecordsCount={tempRecords.length}
+      checkingHistoryCount={checkingHistory.length}
+      onManualSync={handleManualSync}
+      onFetchFromCloud={handleFetchDataFromCloud}
+      onResetQuota={resetQuotaState}
     />
 
     </>

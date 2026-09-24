@@ -62,6 +62,8 @@ export interface ImmRecord {
   formC?: any;
   syncStatus?: 'pending_sync' | 'upload_failed' | 'synced';
   updatedAt?: string;
+  serverSyncedAt?: string;
+  createdDevice?: string;
 }
 
 export interface MasterItem {
@@ -71,6 +73,7 @@ export interface MasterItem {
   linkedValue?: string;
   updatedAt?: string;
   syncStatus?: 'pending_sync' | 'upload_failed' | 'synced';
+  serverSyncedAt?: string;
 }
 
 export type Tab = 'entry' | 'data' | 'movement' | 'stillIn' | 'daily' | 'master' | 'tableOutput' | 'customReport' | 'checking' | 'individualSearch' | 'alarm' | 'telegraph' | 'watchList' | 'info' | 'auditLog';

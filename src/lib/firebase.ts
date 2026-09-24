@@ -179,7 +179,74 @@ export const getCloudMetadata = async () => {
   }
 };
 
-export const saveCollectionToFirestore = async (collectionName: string, items: any[], force: boolean = false) => {
+export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[], remoteArr: T[], key: string = 'id'): T[] => {
+  const map = new Map<string, T>();
+
+  const getItemKey = (item: any): string | null => {
+    if (!item) return null;
+    if (item.date && item.vehicleNo) {
+      return `veh_${item.date}_${String(item.vehicleNo).toUpperCase().trim()}`;
+    }
+    if (item.name && item.type) {
+      return `master_${String(item.type).trim().toLowerCase()}_${String(item.name).trim().toLowerCase().replace(/\s+/g, ' ')}`;
+    }
+    if (item[key] !== undefined && item[key] !== null && String(item[key]).trim() !== '') {
+      return `${key}_${item[key]}`;
+    }
+    if (item.timestamp && item.passport) {
+      return `ts_pp_${item.timestamp}_${item.passport.toUpperCase().trim()}`;
+    }
+    if (item.timestamp) {
+      return `ts_${item.timestamp}`;
+    }
+    return JSON.stringify(item);
+  };
+
+  // 1. Put local items in map first
+  if (Array.isArray(localArr)) {
+    localArr.forEach(item => {
+      const k = getItemKey(item);
+      if (k) map.set(k, item);
+    });
+  }
+
+  // 2. Merge remote items into map
+  if (Array.isArray(remoteArr)) {
+    remoteArr.forEach(item => {
+      const k = getItemKey(item);
+      if (k) {
+        if (!map.has(k)) {
+          // Item on server is confirmed synced
+          map.set(k, { ...item, syncStatus: 'synced' });
+        } else {
+          const localItem = map.get(k)!;
+          const isLocalPendingOrFailed = localItem.syncStatus === 'pending_sync' || localItem.syncStatus === 'upload_failed';
+          const localTime = localItem.updatedAt ? new Date(localItem.updatedAt).getTime() : 0;
+          const remoteTime = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+
+          if (isLocalPendingOrFailed) {
+            map.set(k, { ...item, ...localItem });
+          } else if (remoteTime > localTime) {
+            map.set(k, { ...localItem, ...item, syncStatus: 'synced' });
+          } else if (localTime > remoteTime) {
+            map.set(k, { ...item, ...localItem });
+          } else {
+            map.set(k, { ...localItem, ...item, syncStatus: 'synced' });
+          }
+        }
+      }
+    });
+  }
+
+  return Array.from(map.values());
+};
+
+export const saveCollectionToFirestore = async (
+  collectionName: string, 
+  items: any[], 
+  force: boolean = false,
+  mergeWithRemote: boolean = true
+) => {
   if (isQuotaExhausted) {
     triggerWriteErrorAlert(collectionName, "Write Quota Limit Reached");
     return false;
@@ -188,15 +255,40 @@ export const saveCollectionToFirestore = async (collectionName: string, items: a
   try {
     await ensureAuthenticated();
     const currentJson = JSON.stringify(items || []);
-    // STRICT check: if data has NOT changed, do NOT write to Firestore
+    // STRICT check: if data has NOT changed and not forcing, return true
     if (!force && lastSyncedHashes.get(collectionName) === currentJson) {
       return true;
     }
 
-    const cleanItems = JSON.parse(currentJson);
+    const cleanItems: any[] = JSON.parse(currentJson);
     const now = new Date().toISOString();
     const docRef = doc(db, 'appData', collectionName);
-    await setDoc(docRef, { items: cleanItems, lastUpdated: now });
+
+    let finalItems = cleanItems;
+
+    // Fail-safe merge: fetch existing remote collection so entries from other devices (e.g. Phone or PC) are NEVER wiped out
+    if (mergeWithRemote) {
+      try {
+        const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
+        if (snap.exists()) {
+          const remoteData = snap.data();
+          if (remoteData && Array.isArray(remoteData.items) && remoteData.items.length > 0) {
+            finalItems = mergeCollectionItems(cleanItems, remoteData.items, 'id');
+          }
+        }
+      } catch (mergeErr) {
+        console.warn(`Notice reading remote collection for merge before saving ${collectionName}:`, mergeErr);
+      }
+    }
+
+    // Normalize all items stored on Cloud Server as 'synced' with server timestamp
+    const serverItems = finalItems.map(item => ({
+      ...item,
+      syncStatus: 'synced',
+      serverSyncedAt: item.serverSyncedAt || now
+    }));
+
+    await setDoc(docRef, { items: serverItems, lastUpdated: now });
     
     // Update metadata document asynchronously
     const metaRef = doc(db, 'appData', '_metadata');
@@ -206,7 +298,8 @@ export const saveCollectionToFirestore = async (collectionName: string, items: a
       }
     });
 
-    lastSyncedHashes.set(collectionName, currentJson);
+    const newHash = JSON.stringify(serverItems);
+    lastSyncedHashes.set(collectionName, newHash);
     setLocalTimestamp(collectionName, now);
     return true;
   } catch (err: any) {
@@ -220,6 +313,50 @@ export const saveCollectionToFirestore = async (collectionName: string, items: a
     triggerWriteErrorAlert(collectionName, reason, err);
     console.warn(`Firestore write operation failed for ${collectionName}. Data is safely stored in local IndexedDB.`, err);
     return false;
+  }
+};
+
+export interface CloudStats {
+  recordsCount: number;
+  tempRecordsCount: number;
+  masterDataCount: number;
+  vehicleSummariesCount: number;
+  checkingHistoryCount: number;
+  watchListCount: number;
+  lastUpdated?: string;
+  metadata?: Record<string, string>;
+}
+
+export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> => {
+  if (isQuotaExhausted) return null;
+  try {
+    await ensureAuthenticated();
+    const metaRef = doc(db, 'appData', '_metadata');
+    const metaSnap = await getDocFromServer(metaRef).catch(() => getDoc(metaRef));
+    const metadata = metaSnap.exists() ? (metaSnap.data() as Record<string, string>) : {};
+
+    const [recSnap, tempSnap, masterSnap, checkSnap] = await Promise.all([
+      getDocFromServer(doc(db, 'appData', 'records')).catch(() => getDoc(doc(db, 'appData', 'records'))),
+      getDocFromServer(doc(db, 'appData', 'tempRecords')).catch(() => getDoc(doc(db, 'appData', 'tempRecords'))),
+      getDocFromServer(doc(db, 'appData', 'masterData')).catch(() => getDoc(doc(db, 'appData', 'masterData'))),
+      getDocFromServer(doc(db, 'appData', 'checkingHistory')).catch(() => getDoc(doc(db, 'appData', 'checkingHistory')))
+    ]);
+
+    const getCount = (snap: any) => (snap.exists() && Array.isArray(snap.data()?.items) ? snap.data().items.length : 0);
+
+    return {
+      recordsCount: getCount(recSnap),
+      tempRecordsCount: getCount(tempSnap),
+      masterDataCount: getCount(masterSnap),
+      vehicleSummariesCount: 0,
+      checkingHistoryCount: getCount(checkSnap),
+      watchListCount: 0,
+      metadata,
+      lastUpdated: metadata?.records || new Date().toISOString()
+    };
+  } catch (e) {
+    console.warn("fetchCloudCollectionStats error:", e);
+    return null;
   }
 };
 
