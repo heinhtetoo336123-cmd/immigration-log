@@ -307,1267 +307,6 @@ const Toast = ({ message, visible }: { message: string; visible: boolean }) => (
 
 // --- STANDALONE COMPONENTS ---
 
-// --- FORM C REGISTRATION COMPONENT ---
-const FormCRegistration = () => null;
-
-const FormCRegistration_OLD = ({ 
-  records, 
-  setRecords, 
-  tempRecords,
-  setTempRecords,
-  masterData, 
-  showToast,
-  syncMaster,
-  deleteRecord,
-  preFilledTempId,
-  setPreFilledTempId,
-  currentUser
-}: { 
-  records: ImmRecord[]; 
-  setRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
-  tempRecords: ImmRecord[];
-  setTempRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
-  masterData: MasterItem[];
-  showToast: (msg: string) => void;
-  syncMaster: (val: string, type: MasterItem['type'], linkedValue?: string) => void;
-  deleteRecord: (id: number) => void;
-  preFilledTempId: number | null;
-  setPreFilledTempId: (id: number | null) => void;
-  currentUser: { name: string, title: string } | null;
-}) => {
-  const [search, setSearch] = useState('');
-  const [logSearch, setLogSearch] = useState('');
-  const [targetRecord, setTargetRecord] = useState<ImmRecord | null>(null);
-  const [isCreatingTemp, setIsCreatingTemp] = useState(false);
-  const [listDate, setListDate] = useState(new Date().toISOString().split('T')[0]);
-  const [formCDeleteId, setFormCDeleteId] = useState<number | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
-  const [fcrConfirmation, setFcrConfirmation] = useState<{ show: boolean, message: string, data?: any } | null>(null);
-  const [fcrSuccessMsg, setFcrSuccessMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (currentUser) {
-      setForm(prev => ({
-        ...prev,
-        officialName: currentUser.name || '',
-        officialTitle: currentUser.title || ''
-      }));
-    }
-  }, [currentUser]);
-
-  useEffect(() => {
-    if (preFilledTempId) {
-      const match = tempRecords.find(r => r.id === preFilledTempId);
-      if (match) {
-        selectPerson(match);
-      }
-      setPreFilledTempId(null);
-    }
-  }, [preFilledTempId]);
-  
-  const [form, setForm] = useState({
-    status: '' as 'IN' | 'OUT' | '',
-    officialName: '',
-    officialTitle: '',
-    reporterName: '',
-    reporterPhone: '',
-    submissionDate: new Date().toISOString().split('T')[0],
-    submissionTime: new Date().toTimeString().split(' ')[0].substring(0, 5),
-    stayLocation: '',
-    stayDescription: '',
-    vehicleInfo: '',
-    arrivedFrom: '',
-    departedTo: '',
-    // Temp entry fields
-    fullname: '',
-    passport: '',
-    gender: 'M' as 'M' | 'F' | '',
-    nationality: '',
-    visaType: '',
-    stayFrom: '',
-    stayTo: '',
-    totalDays: '',
-    remarks: '',
-    broughtBy: '',
-    contactDetails: ''
-  });
-
-  const calculateTempStayDates = (field: 'from' | 'days' | 'to', value: string) => {
-    let from = field === 'from' ? value : form.stayFrom;
-    let to = field === 'to' ? value : form.stayTo;
-    let days = field === 'days' ? value : form.totalDays;
-
-    if (field === 'from' || field === 'days') {
-      if (from && days) {
-        const d = new Date(from);
-        d.setDate(d.getDate() + parseInt(days));
-        to = d.toISOString().split('T')[0];
-      }
-    } else if (field === 'to') {
-      if (from && to) {
-        const d1 = new Date(from);
-        const d2 = new Date(to);
-        const diffTime = Math.abs(d2.getTime() - d1.getTime());
-        days = Math.ceil(diffTime / (1000 * 60 * 60 * 24)).toString();
-      }
-    }
-    setForm(prev => ({ ...prev, stayFrom: from, stayTo: to, totalDays: days }));
-  };
-
-  const searchResults = useMemo(() => {
-    if (!search.trim()) return [];
-    const q = search.toLowerCase();
-    const map = new Map<string, ImmRecord>();
-    
-    // Combine both pools, tempRecords prioritized if they are newer/identical
-    const allPool = [...records, ...tempRecords];
-    
-    allPool.sort((a,b) => parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp)).forEach(r => {
-      if (r.fullname.toLowerCase().includes(q) || r.passport.toLowerCase().includes(q)) {
-        map.set(r.passport, r);
-      }
-    });
-    return Array.from(map.values()).reverse();
-  }, [search, records, tempRecords]);
-
-  const formCLogs = useMemo(() => {
-    const all = [...records, ...tempRecords].sort((a,b) => parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp));
-    const groups = new Map<string, any>();
-    
-    all.forEach(r => {
-      const passport = r.passport.toUpperCase();
-      if (!groups.has(passport)) {
-        groups.set(passport, {
-          passport: r.passport,
-          fullname: r.fullname,
-          nationality: r.nationality,
-          lastRecord: r,
-          logIn: null,
-          logOut: null,
-          formCIn: null,
-          formCOut: null,
-        });
-      }
-      const g = groups.get(passport);
-      g.fullname = r.fullname;
-      g.nationality = r.nationality;
-      g.lastRecord = r;
-
-      if (r.mode === 'IN') g.logIn = r;
-      if (r.mode === 'OUT') g.logOut = r;
-      if (r.formC?.status === 'IN') g.formCIn = r;
-      if (r.formC?.status === 'OUT') g.formCOut = r;
-    });
-
-    const logs = Array.from(groups.values()).sort((a,b) => parseTimestamp(b.lastRecord.timestamp) - parseTimestamp(a.lastRecord.timestamp));
-    if (!logSearch.trim()) return logs;
-    const q = logSearch.toLowerCase();
-    return logs.filter(l => 
-      l.fullname.toLowerCase().includes(q) || 
-      l.passport.toLowerCase().includes(q) ||
-      l.nationality.toLowerCase().includes(q)
-    );
-  }, [records, tempRecords, logSearch]);
-
-  const lastStayMap = useMemo(() => {
-    const map = new Map<string, string>();
-    [...records, ...tempRecords]
-      .sort((a,b) => parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp))
-      .forEach(r => {
-        if (r.address) map.set(r.passport, r.address);
-      });
-    return map;
-  }, [records, tempRecords]);
-
-  const exportFCRLogsToExcel = () => {
-    const data = formCLogs.map((g, i) => ({
-      "No": i + 1,
-      "Full Name": g.fullname,
-      "Passport": g.passport,
-      "Nationality": g.nationality,
-      "Log IN": g.logIn ? formatDateToDDMMYYYY(g.logIn.timestamp) : 'N/A',
-      "Log OUT": g.logOut ? formatDateToDDMMYYYY(g.logOut.timestamp) : 'N/A',
-      "Form C IN": g.formCIn ? formatDateToDDMMYYYY(g.formCIn.timestamp) : 'N/A',
-      "Form C OUT": g.formCOut ? formatDateToDDMMYYYY(g.formCOut.timestamp) : 'N/A',
-      "Stay Location": g.formCIn?.formC?.address || g.formCOut?.formC?.address || g.lastRecord.address || 'N/A',
-      "Official": (g.formCOut?.formC || g.formCIn?.formC)?.officialName || 'N/A',
-      "Reporter": (g.formCOut?.formC || g.formCIn?.formC)?.reporterName || 'N/A',
-    }));
-
-    // Sheet 2: Mismatched Log and Form C entries
-    const mismatchedData = formCLogs.filter(g => {
-      const hasLogMsg = g.logIn || g.logOut;
-      const hasFormCMsg = g.formCIn || g.formCOut;
-      if (!hasLogMsg || !hasFormCMsg) return false;
-      const lastLogMode = g.logOut ? 'OUT' : 'IN';
-      const lastFormCMode = g.formCOut ? 'OUT' : 'IN';
-      return lastLogMode !== lastFormCMode;
-    }).map((g, i) => ({
-      "No": i + 1,
-      "Full Name": g.fullname,
-      "Passport": g.passport,
-      "Nationality": g.nationality,
-      "Last Log Mode": g.logOut ? 'OUT' : 'IN',
-      "Last Log Date": g.logOut ? formatDateToDDMMYYYY(g.logOut.timestamp) : formatDateToDDMMYYYY(g.logIn?.timestamp || ""),
-      "Form C Mode": g.formCOut ? 'OUT' : 'IN',
-      "Form C Date": g.formCOut ? formatDateToDDMMYYYY(g.formCOut.timestamp) : formatDateToDDMMYYYY(g.formCIn?.timestamp || ""),
-      "Stay Location": g.formCIn?.formC?.address || g.formCOut?.formC?.address || g.lastRecord.address || 'N/A'
-    }));
-
-    const ws1 = XLSX.utils.json_to_sheet(data);
-    const ws2 = XLSX.utils.json_to_sheet(mismatchedData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws1, "FCR Logs");
-    XLSX.utils.book_append_sheet(wb, ws2, "Mismatched Logs");
-    XLSX.writeFile(wb, `FCR_Logs_${new Date().toISOString().split('T')[0]}.xlsx`);
-  };
-
-  const resetForm = () => {
-    setForm({
-      status: '' as 'IN' | 'OUT' | '',
-      officialName: '',
-      officialTitle: '',
-      reporterName: '',
-      reporterPhone: '',
-      submissionDate: new Date().toISOString().split('T')[0],
-      submissionTime: new Date().toTimeString().split(' ')[0].substring(0, 5),
-      stayLocation: '',
-      stayDescription: '',
-      vehicleInfo: '',
-      arrivedFrom: '',
-      departedTo: '',
-      fullname: '',
-      passport: '',
-      gender: 'M' as 'M' | 'F' | '',
-      nationality: '',
-      visaType: '',
-      stayFrom: '',
-      stayTo: '',
-      totalDays: '',
-      remarks: '',
-      broughtBy: '',
-      contactDetails: ''
-    });
-  };
-
-  const deleteFormCData = (id: number) => {
-    setRecords(prev => prev.map(r => r.id === id ? { ...r, formC: undefined } : r));
-    setTempRecords(prev => prev.map(r => r.id === id ? { ...r, formC: undefined } : r));
-    setFormCDeleteId(null);
-    showToast("FORM C DATA REMOVED");
-  };
-
-  const editLog = (r: ImmRecord) => {
-    setTargetRecord(r);
-    const stayLoc = r.formC?.address || r.address || '';
-    const allRecs = [...records, ...tempRecords].sort((a, b) => getRecordTime(b) - getRecordTime(a));
-    const latestRecWithDesc = allRecs.find(rec => (rec.formC?.address?.toLowerCase() === stayLoc.toLowerCase() || rec.address?.toLowerCase() === stayLoc.toLowerCase()) && (rec.formC?.stayDescription || rec.stayDescription));
-    const latestMaster = [...masterData].reverse().find(m => m.type === 'Stay' && m.name.toLowerCase() === stayLoc.toLowerCase() && m.linkedValue);
-    const stayDesc = r.formC?.stayDescription || r.stayDescription || latestRecWithDesc?.formC?.stayDescription || latestRecWithDesc?.stayDescription || latestMaster?.linkedValue || '';
-    setForm({
-      status: r.formC?.status || '',
-      officialName: r.formC?.officialName || '',
-      officialTitle: r.formC?.officialTitle || '',
-      reporterName: r.formC?.reporterName || '',
-      reporterPhone: r.formC?.reporterPhone || '',
-      submissionDate: r.formC?.submissionDate || new Date().toISOString().split('T')[0],
-      submissionTime: r.formC?.submissionTime || new Date().toTimeString().split(' ')[0].substring(0, 5),
-      stayLocation: stayLoc,
-      stayDescription: stayDesc,
-      vehicleInfo: r.vehicleInfo || '',
-      arrivedFrom: r.arrivedFrom || '',
-      departedTo: r.departedTo || ''
-    });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const selectPerson = (r: ImmRecord) => {
-    setTargetRecord(r);
-    
-    // Selecting an existing person (FH or TEH) means we are NOT creating a new temporary entry from scratch
-    setIsCreatingTemp(false);
-    
-    setSearch('');
-    setForm(prev => {
-      const stayLoc = r.formC?.address || r.address || '';
-      const allRecs = [...records, ...tempRecords].sort((a, b) => getRecordTime(b) - getRecordTime(a));
-      const latestRecWithDesc = allRecs.find(rec => (rec.formC?.address?.toLowerCase() === stayLoc.toLowerCase() || rec.address?.toLowerCase() === stayLoc.toLowerCase()) && (rec.formC?.stayDescription || rec.stayDescription));
-      const latestMaster = [...masterData].reverse().find(m => m.type === 'Stay' && m.name.toLowerCase() === stayLoc.toLowerCase() && m.linkedValue);
-      const stayDesc = r.formC?.stayDescription || r.stayDescription || latestRecWithDesc?.formC?.stayDescription || latestRecWithDesc?.stayDescription || latestMaster?.linkedValue || '';
-      return {
-        ...prev,
-        officialName: currentUser?.name || prev.officialName,
-        officialTitle: currentUser?.title || prev.officialTitle,
-        fullname: r.fullname || '',
-        passport: r.passport || '',
-        gender: r.gender || 'M',
-        nationality: r.nationality || '',
-        visaType: r.visaType || '',
-        stayFrom: r.stayFrom || '',
-        stayTo: r.stayTo || '',
-        totalDays: r.totalDays || '',
-        remarks: r.remarks || '',
-        stayLocation: stayLoc,
-        stayDescription: stayDesc,
-        vehicleInfo: '', // Clear vehicle info in FCR to avoid incorrect autofill from logs or previous state
-        arrivedFrom: prev.arrivedFrom,
-        departedTo: prev.departedTo,
-        reporterName: r.formC?.reporterName || '',
-        reporterPhone: r.formC?.reporterPhone || '',
-        status: ''
-      };
-    });
-  };
-
-  const handleOfficialNameChange = (name: string) => {
-    setForm(prev => ({ ...prev, officialName: name }));
-    if (!name.trim()) return;
-    const val = name.trim().toLowerCase().replace(/\s+/g, '');
-    
-    // 1. Check latest records first for the most recently used title
-    const all = [...records, ...tempRecords].sort((a, b) => getRecordTime(b) - getRecordTime(a));
-    const latestWithTitle = all.find(r => 
-      (r.officialName?.toLowerCase().replace(/\s+/g, '') === val && r.officialTitle && r.officialTitle.trim()) ||
-      (r.formC?.officialName?.toLowerCase().replace(/\s+/g, '') === val && r.formC.officialTitle && r.formC.officialTitle.trim())
-    );
-    if (latestWithTitle) {
-      const finalTitle = latestWithTitle.formC?.officialName?.toLowerCase().replace(/\s+/g, '') === val
-        ? latestWithTitle.formC.officialTitle
-        : latestWithTitle.officialTitle;
-      if (finalTitle) setForm(prev => ({ ...prev, officialTitle: finalTitle }));
-    } else {
-      // 2. Fallback to latest Master Data
-      const masterMatch = [...masterData].reverse().find(m => m.type === 'Official' && m.name.toLowerCase().replace(/\s+/g, '') === val && m.linkedValue);
-      if (masterMatch && masterMatch.linkedValue) {
-        setForm(prev => ({ ...prev, officialTitle: masterMatch.linkedValue || '' }));
-      }
-    }
-  };
-
-  const handleReporterNameChange = (name: string) => {
-    setForm(prev => ({ 
-      ...prev, 
-      reporterName: name,
-      // Sync with Agent if creating temp
-      ...(isCreatingTemp ? { broughtBy: name } : {})
-    }));
-    // Auto-fill phone from last known record for this reporter
-    if (!name.trim()) return;
-    const cleanName = name.trim().toLowerCase();
-    const latest = [...records, ...tempRecords]
-      .filter(r => r.formC?.reporterName?.toLowerCase() === cleanName && r.formC.reporterPhone)
-      .sort((a,b) => getRecordTime(b) - getRecordTime(a))[0];
-    if (latest && latest.formC && latest.formC.reporterPhone) {
-      setForm(prev => ({ 
-        ...prev, 
-        reporterPhone: latest.formC.reporterPhone,
-        ...(isCreatingTemp ? { contactDetails: latest.formC.reporterPhone } : {})
-      }));
-    } else {
-      const masterMatch = [...masterData].reverse().find(m => m.type === 'Reporter' && m.name.toLowerCase() === cleanName && m.linkedValue);
-      if (masterMatch && masterMatch.linkedValue) {
-        setForm(prev => ({ 
-          ...prev, 
-          reporterPhone: masterMatch.linkedValue || '',
-          ...(isCreatingTemp ? { contactDetails: masterMatch.linkedValue || '' } : {})
-        }));
-      }
-    }
-  };
-
-  const handleReporterPhoneChange = (phone: string) => {
-    setForm(prev => ({ 
-      ...prev, 
-      reporterPhone: phone,
-      ...(isCreatingTemp ? { contactDetails: phone } : {})
-    }));
-  };
-
-  const submitFormC = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!targetRecord) return;
-    if (!form.status) {
-      showToast("PLEASE SELECT STATUS (IN/OUT)");
-      return;
-    }
-
-    const lastLog = [...records, ...tempRecords]
-      .filter(r => r.passport.toUpperCase() === targetRecord.passport.toUpperCase())
-      .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp))[0];
-
-    const logDate = lastLog ? formatDateToDDMMYYYY(lastLog.timestamp) : 'N/A';
-    const logMode = lastLog?.mode || 'IN';
-    const formCMode = form.status;
-
-    let message = `လေဆိပ်မှ ${logDate}ရက်နေ့တွင် ${logMode === 'IN' ? 'အဝင်' : 'အထွက်'} ပြထားသူဖြစ်ပါသည်၊ Form C ကို ${formatDateToDDMMYYYY(form.submissionDate)} ရက်စွဲဖြင့် ${form.stayLocation} မှ ${formCMode === 'IN' ? 'အဝင်' : 'အထွက်'} လာရောက်တိုင်ကြားသည်မှာ မှန်ကန်ပါသလား။`;
-    
-    if (logMode !== formCMode) {
-      if (logMode === 'OUT' && formCMode === 'IN') {
-        message += " လေဆိပ်မဟုတ်သော အခြားနေရာမှ ဝင်ရောက်လာသူဖြစ်နိုင်ပါသည်။";
-      } else if (logMode === 'IN' && formCMode === 'OUT') {
-        message += " လေဆိပ်မဟုတ်သော အခြားနေရာမှ ထွက်ခွါသွားသူဖြစ်နိုင်ပါသည်။";
-      }
-    }
-
-    setFcrConfirmation({ show: true, message, data: { isTemp: false } });
-  };
-
-  const executeSubmitFormC = () => {
-    if (!targetRecord) return;
-    
-    const parts = form.submissionDate.split('-');
-    const slashDate = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : form.submissionDate;
-    const calculatedTimestamp = `${slashDate}, ${form.submissionTime || '00:00'}`;
-
-    const brandNewFcrRecord: ImmRecord = {
-      ...targetRecord,
-      id: targetRecord.logType === 'FCR' ? targetRecord.id : Date.now(), // Unique ID if creating from FFE
-      timestamp: calculatedTimestamp,
-      logType: 'FCR', // Always log as standalone FCR
-      address: form.stayLocation,
-      remarks: form.remarks,
-      formC: {
-        status: form.status as 'IN' | 'OUT',
-        officialName: form.officialName,
-        officialTitle: form.officialTitle,
-        reporterName: form.reporterName,
-        reporterPhone: form.reporterPhone,
-        address: form.stayLocation,
-        submissionDate: form.submissionDate,
-        submissionTime: form.submissionTime
-      }
-    };
-
-    const existsInTemp = tempRecords.some(r => r.id === targetRecord.id);
-
-    if (existsInTemp) {
-      setTempRecords(prev => prev.map(r => r.id === targetRecord.id ? brandNewFcrRecord : r));
-    } else {
-      setTempRecords(prev => [brandNewFcrRecord, ...prev]);
-    }
-    
-    syncMaster(form.officialName, 'Official');
-    syncMaster(form.officialTitle, 'Title');
-    syncMaster(form.reporterName, 'Reporter');
-    syncMaster(form.reporterPhone, 'Phone');
-    syncMaster(form.stayLocation, 'Stay', form.stayDescription);
-
-    setFcrSuccessMsg(`${form.officialName} စာရင်းသွင်းသော Form C ကို စာရင်းသွင်းပြီးပါပြီ`);
-    setTimeout(() => setFcrSuccessMsg(null), 3000);
-
-    setFcrConfirmation(null);
-    setTargetRecord(null);
-    resetForm();
-  };
-
-  const submitTempFormC = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.status) {
-      showToast("PLEASE SELECT STATUS (IN/OUT)");
-      return;
-    }
-
-    const lastLog = [...records, ...tempRecords]
-      .filter(r => r.passport.toUpperCase() === (targetRecord?.passport?.toUpperCase() || ""))
-      .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp))[0];
-
-    const logDate = lastLog ? formatDateToDDMMYYYY(lastLog.timestamp) : 'N/A';
-    const logMode = lastLog?.mode || 'IN';
-    const formCMode = form.status;
-
-    let message = `လေဆိပ်မှ ${logDate}ရက်နေ့တွင် ${logMode === 'IN' ? 'အဝင်' : 'အထွက်'} ပြထားသူဖြစ်ပါသည်၊ Form C ကို ${formatDateToDDMMYYYY(form.submissionDate)} ရက်စွဲဖြင့် ${form.stayLocation} မှ ${formCMode === 'IN' ? 'အဝင်' : 'အထွက်'} လာရောက်တိုင်ကြားသည်မှာ မှန်ကန်ပါသလား။`;
-    
-    if (logMode !== formCMode) {
-      if (logMode === 'OUT' && formCMode === 'IN') {
-        message += " လေဆိပ်မဟုတ်သော အခြားနေရာမှ ဝင်ရောက်လာသူဖြစ်နိုင်ပါသည်။";
-      } else if (logMode === 'IN' && formCMode === 'OUT') {
-        message += " လေဆိပ်မဟုတ်သော အခြားနေရာမှ ထွက်ခွါသွားသူဖြစ်နိုင်ပါသည်။";
-      }
-    }
-
-    setFcrConfirmation({ show: true, message, data: { isTemp: true } });
-  };
-
-  const executeSubmitTempFormC = () => {
-    const parts = form.submissionDate.split('-');
-    const slashDate = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : form.submissionDate;
-    const timestamp = `${slashDate}, ${form.submissionTime || '00:00'}`;
-    
-    const newTempRecord: ImmRecord = {
-      ...(targetRecord || {}),
-      logType: 'FCR',
-      id: targetRecord && tempRecords.some(tr => tr.id === targetRecord.id) && (!targetRecord.formC || targetRecord.formC.status === form.status) 
-        ? targetRecord.id 
-        : Date.now(),
-      timestamp,
-      mode: form.status as 'IN' | 'OUT',
-      passport: form.passport.toUpperCase(),
-      fullname: form.fullname,
-      gender: form.gender as 'M' | 'F',
-      nationality: form.nationality,
-      address: form.stayLocation,
-      visaType: form.visaType,
-      stayFrom: form.stayFrom,
-      stayTo: form.stayTo,
-      totalDays: form.totalDays,
-      remarks: form.remarks,
-      arrivedFrom: form.status === 'OUT' ? 'MGZ' : form.arrivedFrom,
-      departedTo: 'MGZ', // Removed departedTo selection in FCR, default to MGZ
-      broughtBy: form.reporterName, 
-      contactDetails: form.reporterPhone, 
-      formC: {
-        status: form.status as 'IN' | 'OUT',
-        officialName: form.officialName,
-        officialTitle: form.officialTitle,
-        reporterName: form.reporterName,
-        reporterPhone: form.reporterPhone,
-        address: form.stayLocation,
-        submissionDate: form.submissionDate,
-        submissionTime: form.submissionTime
-      }
-    };
-
-    if (targetRecord && tempRecords.some(tr => tr.id === targetRecord.id) && (!targetRecord.formC || targetRecord.formC.status === form.status)) {
-      setTempRecords(prev => prev.map(tr => tr.id === targetRecord.id ? newTempRecord : tr));
-    } else {
-      setTempRecords(prev => [newTempRecord, ...prev]);
-    }
-    
-    // Sync to Master
-    syncMaster(form.nationality, 'Nationality');
-    syncMaster(form.visaType, 'Visa');
-    syncMaster(form.broughtBy, 'Agent');
-    syncMaster(form.contactDetails, 'Contact');
-    syncMaster(form.officialName, 'Official');
-    syncMaster(form.officialTitle, 'Title');
-    syncMaster(form.reporterName, 'Reporter');
-    syncMaster(form.reporterPhone, 'Phone');
-    syncMaster(form.vehicleInfo, 'Vehicle');
-    syncMaster(form.stayLocation, 'Stay', form.stayDescription);
-
-    setFcrSuccessMsg(`${form.officialName} စာရင်းသွင်းသော Form C ကို စာရင်းသွင်းပြီးပါပြီ`);
-    setTimeout(() => setFcrSuccessMsg(null), 3000);
-
-    setFcrConfirmation(null);
-    setTargetRecord(null);
-    setIsCreatingTemp(false);
-    resetForm();
-    showToast("TEMPORARY FORM C ENTRY SAVED");
-    setSearch('');
-  };
-
-  const startTempEntry = () => {
-    setIsCreatingTemp(true);
-    setForm(prev => ({
-      ...prev,
-      fullname: search.match(/[a-zA-Z]/) ? search : '',
-      passport: search.match(/[0-9]/) ? search : '',
-      officialName: currentUser?.name || prev.officialName,
-      officialTitle: currentUser?.title || prev.officialTitle
-    }));
-  };
-
-  return (
-    <div className="max-w-[1600px] mx-auto py-8 px-4 space-y-8 relative">
-      <AnimatePresence>
-        {fcrConfirmation && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 no-print">
-             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-md" />
-             <motion.div 
-               initial={{ scale: 0.9, opacity: 0, y: 20 }} 
-               animate={{ scale: 1, opacity: 1, y: 0 }} 
-               exit={{ scale: 0.9, opacity: 0, y: 20 }} 
-               className="relative bg-white w-full max-w-lg rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-purple-500"
-             >
-                <div className="p-8 text-center space-y-6">
-                  <div className="w-20 h-20 bg-purple-100 rounded-full flex items-center justify-center mx-auto text-purple-600">
-                    <ShieldCheck size={40} />
-                  </div>
-                  <div className="space-y-4">
-                    <h3 className="text-2xl font-black text-gray-900 leading-tight">သေချာပါသလား?</h3>
-                    <p className="text-gray-600 font-medium leading-relaxed px-4">
-                      {fcrConfirmation.message}
-                    </p>
-                  </div>
-                  <div className="flex gap-4 pt-4">
-                    <button 
-                      onClick={() => setFcrConfirmation(null)}
-                      className="flex-1 py-4 px-6 rounded-2xl bg-gray-100 text-gray-500 font-black uppercase text-sm hover:bg-gray-200 transition-colors"
-                    >
-                      ပြင်ဆင်ရန် (NO)
-                    </button>
-                    <button 
-                      onClick={() => {
-                        if (fcrConfirmation.data?.isTemp) executeSubmitTempFormC();
-                        else executeSubmitFormC();
-                      }}
-                      className="flex-1 py-4 px-6 rounded-2xl bg-purple-600 text-white font-black uppercase text-sm hover:bg-purple-900 shadow-xl shadow-purple-200 transition-colors"
-                    >
-                      မှန်ကန်ပါသည်။ (YES)
-                    </button>
-                  </div>
-                </div>
-             </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {fcrSuccessMsg && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center pointer-events-none no-print">
-             <motion.div 
-               initial={{ scale: 0.5, opacity: 0, y: 50 }} 
-               animate={{ scale: 1, opacity: 1, y: 0 }} 
-               exit={{ scale: 1.5, opacity: 0 }} 
-               className="bg-indigo-900 text-white px-10 py-6 rounded-full shadow-2xl flex items-center gap-4 border-2 border-white/20 backdrop-blur-xl"
-             >
-                <div className="w-10 h-10 bg-emerald-400 rounded-full flex items-center justify-center text-indigo-900">
-                  <Check size={24} strokeWidth={4} />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-[10px] font-black uppercase opacity-60 tracking-widest">Registration Successful</span>
-                  <span className="text-lg font-black">{fcrSuccessMsg}</span>
-                </div>
-             </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      <div className="card shadow-2xl border-t-8 border-purple-600">
-        <datalist id="officialList">{masterData.filter(m => m.type === 'Official').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="titleList">{masterData.filter(m => m.type === 'Title').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="reporterList">{masterData.filter(m => m.type === 'Reporter').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="phoneList">{masterData.filter(m => m.type === 'Phone').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="stayList">{masterData.filter(m => m.type === 'Stay').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="vehicleList">{masterData.filter(m => m.type === 'Vehicle').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="natList">{masterData.filter(m => m.type === 'Nationality').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="visaList">{masterData.filter(m => m.type === 'Visa').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="agentList">{masterData.filter(m => m.type === 'Agent').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="contactList">{masterData.filter(m => m.type === 'Contact').map(m => <option key={m.id} value={m.name} />)}</datalist>
-        <datalist id="permitDescriptionList">{masterData.filter(m => m.type === 'PermitDescription').map(m => <option key={m.id} value={m.name} />)}</datalist>
-
-        <div className="flex items-center gap-4 mb-8">
-          <div className="bg-purple-100 p-3 rounded-full text-purple-700">
-            <FileText size={28} />
-          </div>
-          <div>
-            <h2 className="text-2xl font-black uppercase tracking-tight text-gray-800">Form C Registration</h2>
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Update Resident Status & Reporting</p>
-          </div>
-        </div>
-
-        {isCreatingTemp ? (
-          <form onSubmit={submitTempFormC} className="space-y-8 animate-in zoom-in-95 duration-300">
-            <div className="bg-amber-50 p-4 rounded-2xl border border-amber-200 flex items-center gap-3">
-              <AlertCircle size={24} className="text-amber-600" />
-              <div>
-                <h3 className="text-sm font-black uppercase text-amber-800">Temporary Entry Mode</h3>
-                <p className="text-[10px] font-bold text-amber-600 uppercase">This record will be tagged as TEMPORARY ENTRY</p>
-              </div>
-              <button type="button" onClick={() => setIsCreatingTemp(false)} className="ml-auto text-amber-400 hover:text-amber-600">
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 border-t pt-8">
-               <div className="space-y-4 p-4 bg-purple-50/30 rounded-2xl border border-purple-100">
-                  <h4 className="text-xs font-black uppercase text-purple-700 pb-2 border-b border-purple-200 tracking-widest flex items-center gap-2">
-                    <span className="bg-purple-700 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">1</span>
-                    Movement & Official
-                  </h4>
-                  <div className="space-y-4">
-                    <div className="flex gap-2">
-                      <button 
-                        type="button" 
-                        onClick={() => setForm(prev => ({...prev, status: 'IN'}))}
-                        className={`flex-1 py-3 rounded-lg border-2 font-black text-[10px] transition-all ${form.status === 'IN' ? 'bg-emerald-600 border-emerald-700 text-white shadow-md' : 'bg-white border-emerald-100 text-emerald-600 hover:bg-emerald-50'}`}
-                      >
-                        ENTRY (IN)
-                      </button>
-                      <button 
-                        type="button" 
-                        onClick={() => setForm(prev => ({...prev, status: 'OUT'}))}
-                        className={`flex-1 py-3 rounded-lg border-2 font-black text-[10px] transition-all ${form.status === 'OUT' ? 'bg-orange-600 border-orange-700 text-white shadow-md' : 'bg-white border-orange-100 text-orange-600 hover:bg-orange-50'}`}
-                      >
-                        EXIT (OUT)
-                      </button>
-                    </div>
-                    <div>
-                      <label className="input-label">Official Name</label>
-                      <input 
-                        type="text" 
-                        list="officialList" 
-                        value={form.officialName} 
-                        onChange={e => !currentUser && handleOfficialNameChange(e.target.value)} 
-                        className={`input-field shadow-sm ${currentUser ? 'bg-gray-100 font-bold opacity-70' : ''}`}
-                        required 
-                        readOnly={!!currentUser}
-                      />
-                    </div>
-                    <div>
-                      <label className="input-label">Position / Title</label>
-                      <input 
-                        type="text" 
-                        list="titleList" 
-                        value={form.officialTitle} 
-                        onChange={e => !currentUser && setForm(prev => ({...prev, officialTitle: e.target.value}))} 
-                        className={`input-field shadow-sm ${currentUser ? 'bg-gray-100 font-bold opacity-70' : ''}`}
-                        readOnly={!!currentUser}
-                      />
-                    </div>
-                  </div>
-               </div>
-
-               <div className="space-y-4 p-4 bg-blue-50/30 rounded-2xl border border-blue-100">
-                  <h4 className="text-xs font-black uppercase text-blue-700 pb-2 border-b border-blue-200 tracking-widest flex items-center gap-2">
-                    <span className="bg-blue-700 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">2</span>
-                    Personal Identity
-                  </h4>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="col-span-2">
-                       <label className="input-label">Full Name</label>
-                       <input type="text" value={form.fullname} onChange={e => setForm(prev => ({...prev, fullname: e.target.value}))} className="input-field shadow-sm" required />
-                    </div>
-                    <div>
-                       <label className="input-label">Passport</label>
-                       <input type="text" value={form.passport} onChange={e => setForm(prev => ({...prev, passport: e.target.value.toUpperCase()}))} className="input-field shadow-sm font-black" required />
-                    </div>
-                    <div>
-                       <label className="input-label">Nationality</label>
-                       <input type="text" list="natList" value={form.nationality} onChange={e => setForm(prev => ({...prev, nationality: e.target.value}))} className="input-field shadow-sm" />
-                    </div>
-                    <div>
-                       <label className="input-label">Gender</label>
-                       <select value={form.gender} onChange={e => setForm(prev => ({...prev, gender: e.target.value as any}))} className="input-field shadow-sm">
-                          <option value="M">Male</option>
-                          <option value="F">Female</option>
-                       </select>
-                    </div>
-                    <div>
-                       <label className="input-label">Visa Type</label>
-                       <input type="text" list="visaList" value={form.visaType} onChange={e => setForm(prev => ({...prev, visaType: e.target.value}))} className="input-field shadow-sm" />
-                    </div>
-                  </div>
-               </div>
-
-               <div className="space-y-4 p-4 bg-emerald-50/30 rounded-2xl border border-emerald-100">
-                  <h4 className="text-xs font-black uppercase text-emerald-700 pb-2 border-b border-emerald-200 tracking-widest flex items-center gap-2">
-                    <span className="bg-emerald-700 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">3</span>
-                    Route & Stay
-                  </h4>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                       <label className="input-label">Origin (From)</label>
-                       <input 
-                         type="text" 
-                         list="stayList" 
-                         value={form.status === 'OUT' ? 'MGZ' : form.arrivedFrom} 
-                         onChange={e => setForm(prev => ({...prev, arrivedFrom: e.target.value}))} 
-                         className={`input-field shadow-sm ${form.status === 'OUT' ? 'bg-gray-100 font-black cursor-not-allowed text-emerald-700' : ''}`}
-                         readOnly={form.status === 'OUT'} 
-                       />
-                    </div>
-                    <div>
-                       <label className="input-label">Dest (To)</label>
-                       <input 
-                         type="text" 
-                         list="stayList" 
-                         value={form.status === 'IN' ? 'MGZ' : form.departedTo} 
-                         onChange={e => setForm(prev => ({...prev, departedTo: e.target.value}))} 
-                         className={`input-field shadow-sm ${form.status === 'IN' ? 'bg-gray-100 font-black cursor-not-allowed text-orange-700' : ''}`}
-                         readOnly={form.status === 'IN'} 
-                       />
-                    </div>
-                    <div className="col-span-2">
-                       <label className="input-label">Stay Location</label>
-                       <input 
-                          type="text" 
-                          list="stayList" 
-                          value={form.stayLocation} 
-                          onChange={e => {
-                            const val = e.target.value;
-                            const cleanVal = (val || '').trim().toLowerCase();
-                            const all = [...records, ...tempRecords].sort((a, b) => getRecordTime(b) - getRecordTime(a));
-                            const latestRec = all.find(r => (r.formC?.address?.toLowerCase() === cleanVal || r.address?.toLowerCase() === cleanVal) && (r.formC?.stayDescription || r.stayDescription));
-                            const latestMaster = [...masterData].reverse().find(m => m.type === 'Stay' && m.name.toLowerCase() === cleanVal && m.linkedValue);
-                            const desc = latestRec?.formC?.stayDescription || latestRec?.stayDescription || latestMaster?.linkedValue || '';
-                            setForm(prev => ({
-                              ...prev, 
-                              stayLocation: val,
-                              stayDescription: desc || prev.stayDescription
-                            }));
-                          }} 
-                          className="input-field shadow-sm" 
-                          required 
-                        />
-                     </div>
-                     <div className="col-span-2">
-                        <label className="input-label text-indigo-900 font-extrabold">🏡 Detail Address / Stay Description</label>
-                        <input 
-                          type="text" 
-                          value={form.stayDescription || ''} 
-                          onChange={e => setForm(prev => ({ ...prev, stayDescription: e.target.value }))} 
-                          className="input-field shadow-sm bg-indigo-50/20 border-indigo-200" 
-                          placeholder="Detail stay address or description..." 
-                        />
-                     </div>
-                     <div className="col-span-2">
-                        <label className="input-label pb-1 border-b mb-1 text-[10px]">Stay Period (From - Days - To)</label>
-                        <div className="flex gap-2">
-                           <input type="date" value={form.stayFrom} onChange={e => calculateTempStayDates('from', e.target.value)} className="input-field py-1 px-2 text-[10px]" />
-                           <input type="text" value={form.totalDays} onChange={e => calculateTempStayDates('days', e.target.value)} className="input-field w-16 text-center font-bold text-indigo-700 text-[10px]" placeholder="Days" />
-                           <input type="date" value={form.stayTo} onChange={e => calculateTempStayDates('to', e.target.value)} className="input-field py-1 px-2 text-[10px]" />
-                        </div>
-                     </div>
-                  </div>
-               </div>
-
-               <div className="space-y-4 p-4 bg-orange-50/30 rounded-2xl border border-orange-100">
-                  <h4 className="text-xs font-black uppercase text-orange-700 pb-2 border-b border-orange-200 tracking-widest flex items-center gap-2">
-                    <span className="bg-orange-700 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">4</span>
-                    Reporter & History
-                  </h4>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="input-label">Reporter Name</label>
-                        <input type="text" list="reporterList" value={form.reporterName} onChange={e => handleReporterNameChange(e.target.value)} className="input-field shadow-sm" required />
-                      </div>
-                      <div>
-                        <label className="input-label">Phone</label>
-                        <input type="text" list="phoneList" value={form.reporterPhone} onChange={e => handleReporterPhoneChange(e.target.value)} className="input-field shadow-sm" required />
-                      </div>
-                    </div>
-                    <div>
-                       <label className="input-label">Remarks</label>
-                       <input type="text" value={form.remarks} onChange={e => setForm(prev => ({...prev, remarks: e.target.value}))} className="input-field shadow-sm" placeholder="Notes..." />
-                    </div>
-                  </div>
-               </div>
-            </div>
-
-            <div className="pt-6 border-t flex gap-4">
-               <button type="button" onClick={() => setIsCreatingTemp(false)} className="btn flex-1 bg-gray-100 text-gray-600 hover:bg-gray-200 font-black uppercase">Cancel</button>
-               <button type="submit" className="btn flex-1 bg-amber-600 text-white hover:bg-black shadow-xl font-black uppercase">Submit Temporary Entry</button>
-            </div>
-          </form>
-        ) : !targetRecord ? (
-          <div className="space-y-6">
-            <div className="relative">
-              <label className="input-label">Search Entry Record (Name or Passport)</label>
-              <div className="relative group">
-                <input 
-                  type="text" 
-                  value={search} 
-                  onChange={(e) => setSearch(e.target.value)} 
-                  className="input-field pl-12 h-14 text-lg font-bold border-purple-200 focus:border-purple-500 transition-all text-gray-800" 
-                  placeholder="Type name or passport..." 
-                />
-                <Search size={24} className="absolute left-4 top-4 text-purple-300 group-focus-within:text-purple-600 transition-colors" />
-                {search && (
-                  <button 
-                    type="button"
-                    onClick={() => setSearch('')}
-                    className="absolute right-4 top-4 text-gray-400 hover:text-red-500 transition-colors"
-                  >
-                    <X size={24} strokeWidth={3} />
-                  </button>
-                )}
-              </div>
-              
-              {searchResults.length > 0 && (
-                <div className="absolute z-10 w-full mt-2 bg-white border border-gray-100 shadow-2xl rounded-2xl overflow-hidden animate-in fade-in slide-in-from-top-2">
-                  {searchResults.map(r => (
-                    <button 
-                      key={r.id} 
-                      onClick={() => selectPerson(r)}
-                      className="w-full p-4 hover:bg-purple-50 text-left border-b last:border-0 transition-colors flex justify-between items-center group"
-                    >
-                      <div>
-                        <div className="font-black text-gray-900 group-hover:text-purple-700">{r.fullname}</div>
-                        <div className="text-xs text-gray-400 font-mono">{r.passport} | {r.nationality}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-[10px] font-black text-gray-300 uppercase">{r.timestamp}</div>
-                        <div className="text-xs font-bold text-gray-500">{r.address}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            {search.length > 0 && searchResults.length === 0 && (
-              <div className="text-center py-10 bg-gray-50 rounded-2xl border-2 border-dashed font-bold text-gray-400 space-y-4">
-                <p>No matching records found for "{search}"</p>
-                <button 
-                  onClick={startTempEntry}
-                  className="btn bg-purple-600 text-white hover:bg-black uppercase text-xs"
-                >
-                  Create Temporary Form C Registration Entry
-                </button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <form onSubmit={submitFormC} className="space-y-8 animate-in zoom-in-95 duration-300">
-            <div className="bg-purple-50 p-6 rounded-2xl border border-purple-100 flex justify-between items-center">
-              <div>
-                <h3 className="text-sm font-black uppercase text-purple-800 mb-1">Target Person</h3>
-                <div className="text-xl font-black text-gray-900">{targetRecord.fullname}</div>
-                <div className="text-xs font-bold text-purple-600">{targetRecord.passport} | {targetRecord.nationality}</div>
-                
-                {/* Movement Summary in Burmese */}
-                <div className="mt-4 p-3 bg-white/80 rounded-xl border border-purple-100 text-[11px] leading-relaxed text-purple-900 font-bold shadow-sm">
-                   <div>({targetRecord.timestamp.split(',')[0]}) တွင် ({targetRecord.arrivedFrom || 'N/A'})မှ ({targetRecord.departedTo || 'N/A'})သို့ {targetRecord.mode === 'IN' ? 'ဝင်ရောက်လာ' : 'ထွက်ခွါသွား'}သူဖြစ်ပါသည်။</div>
-                   <div className="mt-1">({targetRecord.address || 'N/A'}) တွင် {targetRecord.mode === 'IN' ? 'နေထိုင်မည်' : 'နေထိုင်သူ'} ဟုသိရပါသည်။</div>
-                </div>
-              </div>
-              <button 
-                type="button" 
-                onClick={() => setTargetRecord(null)}
-                className="btn bg-white text-gray-400 hover:text-red-500 border-0 shadow-none hover:bg-red-50"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="space-y-6">
-                <div className="bg-white p-6 rounded-2xl border border-purple-100 shadow-sm space-y-4">
-                  <h4 className="text-xs font-black uppercase text-purple-700 border-b pb-2 tracking-widest flex items-center gap-2">
-                    <MapPin size={14} /> Registration Details
-                  </h4>
-                  <div className="grid grid-cols-1 gap-4">
-                    <div>
-                      <label className="input-label">Stay Location (Can be updated)</label>
-                      <input 
-                        type="text" 
-                        list="stayList"
-                        value={form.stayLocation} 
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          const cleanVal = (val || '').trim().toLowerCase();
-                          const all = [...records, ...tempRecords].sort((a, b) => getRecordTime(b) - getRecordTime(a));
-                          const latestRec = all.find(r => (r.formC?.address?.toLowerCase() === cleanVal || r.address?.toLowerCase() === cleanVal) && (r.formC?.stayDescription || r.stayDescription));
-                          const latestMaster = [...masterData].reverse().find(m => m.type === 'Stay' && m.name.toLowerCase() === cleanVal && m.linkedValue);
-                          const desc = latestRec?.formC?.stayDescription || latestRec?.stayDescription || latestMaster?.linkedValue || '';
-                          setForm(prev => ({ 
-                            ...prev, 
-                            stayLocation: val,
-                            stayDescription: desc || prev.stayDescription
-                          }));
-                        }} 
-                        className="input-field border-purple-100 placeholder:text-gray-300" 
-                        placeholder="Enter location..."
-                      />
-                    </div>
-                    <div>
-                      <label className="input-label text-purple-900 font-extrabold">🏡 Detail Address / Stay Description (လိပ်စာအသေးစိတ်)</label>
-                      <input 
-                        type="text" 
-                        value={form.stayDescription || ''} 
-                        onChange={(e) => setForm(prev => ({ ...prev, stayDescription: e.target.value }))} 
-                        className="input-field border-purple-150 bg-purple-50/20" 
-                        placeholder="Detail stay address or description..." 
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="input-label">Submission Date</label>
-                        <input 
-                          type="date" 
-                          value={form.submissionDate} 
-                          onChange={(e) => setForm(prev => ({ ...prev, submissionDate: e.target.value }))} 
-                          className="input-field border-purple-100" 
-                        />
-                      </div>
-                      <div>
-                        <label className="input-label">Submission Time</label>
-                        <input 
-                          type="time" 
-                          value={form.submissionTime} 
-                          onChange={(e) => setForm(prev => ({ ...prev, submissionTime: e.target.value }))} 
-                          className="input-field border-purple-100" 
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="input-label">Form C Status</label>
-                      <div className="flex bg-gray-100 p-1 rounded-xl">
-                        <button 
-                          type="button"
-                          onClick={() => setForm(prev => ({ ...prev, status: 'IN' }))}
-                          className={`flex-1 py-3 rounded-lg text-xs font-black transition-all ${form.status === 'IN' ? 'bg-white shadow text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}
-                        >
-                          FORMC IN
-                        </button>
-                        <button 
-                          type="button"
-                          onClick={() => setForm(prev => ({ ...prev, status: 'OUT' }))}
-                          className={`flex-1 py-3 rounded-lg text-xs font-black transition-all ${form.status === 'OUT' ? 'bg-white shadow text-orange-600' : 'text-gray-400 hover:text-gray-600'}`}
-                        >
-                          FORMC OUT
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <h4 className="text-xs font-black uppercase text-gray-400 border-b pb-2 tracking-widest">Authority & Reporter</h4>
-                <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="input-label">Immigration Official Name</label>
-                    <input 
-                      list="officialList" 
-                      type="text" 
-                      value={form.officialName} 
-                      onChange={(e) => handleOfficialNameChange(e.target.value)} 
-                      className={`input-field ${!!currentUser ? 'bg-gray-100 cursor-not-allowed font-black text-slate-700 border-dashed border-gray-300' : ''}`} 
-                      readOnly={!!currentUser}
-                      required 
-                    />
-                  </div>
-                  <div>
-                    <label className="input-label">Position / Title</label>
-                    <input 
-                      list="titleList" 
-                      type="text" 
-                      value={form.officialTitle} 
-                      onChange={(e) => setForm(prev => ({ ...prev, officialTitle: e.target.value }))} 
-                      className={`input-field ${!!currentUser ? 'bg-gray-100 cursor-not-allowed font-black text-slate-700 border-dashed border-gray-300' : ''}`} 
-                      readOnly={!!currentUser}
-                    />
-                  </div>
-                  <div>
-                    <label className="input-label">Reporter Name</label>
-                    <input list="reporterList" type="text" value={form.reporterName} onChange={(e) => handleReporterNameChange(e.target.value)} className="input-field" required />
-                  </div>
-                  <div>
-                    <label className="input-label">Reporter Phone Number</label>
-                    <input list="phoneList" type="text" value={form.reporterPhone} onChange={(e) => setForm(prev => ({ ...prev, reporterPhone: e.target.value }))} className="input-field" />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-6 border-t flex gap-4">
-               <button type="button" onClick={() => setTargetRecord(null)} className="btn flex-1 bg-gray-100 text-gray-600 hover:bg-gray-200 uppercase font-black">Cancel</button>
-               <button type="submit" className="btn flex-1 bg-purple-700 text-white hover:bg-purple-800 shadow-xl shadow-purple-100 uppercase font-black">Confirm Registration</button>
-            </div>
-          </form>
-        )}
-      </div>
-
-      <div className="card shadow-xl border-t-8 border-purple-900 overflow-hidden">
-        <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8 text-slate-800">
-           <div className="flex items-center gap-3">
-              <div className="bg-purple-900 text-white p-2.5 rounded-xl shadow-lg">
-                 <History size={20} />
-              </div>
-              <h3 className="text-xl font-black uppercase tracking-tight">Immigration & Form C Complete History</h3>
-           </div>
-
-           <div className="flex flex-1 max-w-md w-full relative group">
-             <input 
-               type="text" 
-               placeholder="Search logs by name, passport..." 
-               value={logSearch}
-               onChange={(e) => setLogSearch(e.target.value)}
-               id="fcr-log-search"
-               name="fcr-log-search"
-               autoComplete="off"
-               className="input-field pl-10 pr-10 text-xs h-10 w-full font-bold text-slate-800 bg-slate-50 border-slate-200 focus:border-purple-600 focus:bg-white transition-all outline-none shadow-sm"
-             />
-             <Search size={16} className="absolute left-3.5 top-3 text-slate-400" />
-             {logSearch && (
-               <button 
-                 onClick={() => setLogSearch('')}
-                 className="absolute right-3 top-2.5 text-slate-400 hover:text-red-500 transition-colors"
-               >
-                 <X size={18} />
-               </button>
-             )}
-           </div>
-
-           <button 
-             onClick={exportFCRLogsToExcel} 
-             className="btn bg-emerald-600 text-white hover:bg-black text-[10px] font-black uppercase flex items-center gap-2 px-6 shadow-lg shadow-emerald-50"
-           >
-             <Download size={16} /> Export Excel
-           </button>
-        </div>
-
-        <div className="overflow-x-auto border rounded-2xl">
-           <table className="w-full text-left text-sm">
-              <thead className="bg-purple-900 text-white font-black uppercase tracking-widest text-[10px]">
-                 <tr>
-                    <th className="p-4 border-r border-white/10 text-center">No</th>
-                    <th className="p-4 border-r border-white/10">Identity (Passport & Name)</th>
-                    <th className="p-4 border-r border-white/10 text-center">Log IN</th>
-                    <th className="p-4 border-r border-white/10 text-center">Log OUT</th>
-                    <th className="p-4 border-r border-white/10 text-center">Form C IN</th>
-                    <th className="p-4 border-r border-white/10 text-center">Form C OUT</th>
-                    <th className="p-4 border-white/10">Official / Reporter (Logger)</th>
-                  </tr>
-               </thead>
-               <tbody className="divide-y divide-purple-50">
-                 {formCLogs.map((g, i) => (
-                   <tr key={g.passport} className="hover:bg-purple-50/50 transition-colors group">
-                      <td className="p-4 border-r font-black text-gray-300 text-center">{i + 1}</td>
-                      <td className="p-4 border-r">
-                         <div className="font-black text-gray-900">{g.fullname}</div>
-                         <div className="flex flex-col">
-                            <div className="text-[10px] text-gray-400 font-mono italic">{g.passport}</div>
-                            <div className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 mt-1">
-                               <MapPin size={10} /> {g.formCIn?.formC?.address || g.formCOut?.formC?.address || g.lastRecord.address || 'N/A'}
-                            </div>
-                         </div>
-                      </td>
-                      
-                      {/* Log IN Cell */}
-                      <td className="p-4 border-r text-center group/cell relative min-w-[120px]">
-                         {g.logIn ? (
-                           <div className="space-y-1">
-                              <span className="px-2 py-0.5 rounded text-[10px] font-black border bg-emerald-50 text-emerald-800 border-emerald-100 uppercase">IN</span>
-                              <div className="text-[9px] text-gray-500 font-black">{formatDateToDDMMYYYY(g.logIn.timestamp)}</div>
-                              <div className="text-[10px] text-emerald-600 font-bold italic line-clamp-1">{g.logIn.address || 'N/A'}</div>
-                              
-                              <div className="flex flex-col gap-1 mt-2 transition-opacity">
-                                 <button onClick={() => editLog(g.logIn)} className={`flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white transition-colors`}>
-                                    <Edit size={10} /> Edit
-                                 </button>
-                                 {deleteConfirmId === g.logIn.id ? (
-                                   <div className="flex gap-1">
-                                     <button onClick={() => { deleteRecord(g.logIn.id); setDeleteConfirmId(null); }} className="flex-1 text-[8px] font-black bg-red-600 text-white rounded py-1">SURE?</button>
-                                     <button onClick={() => setDeleteConfirmId(null)} className="flex-1 text-[8px] font-black bg-gray-200 text-gray-600 rounded py-1">NO</button>
-                                   </div>
-                                 ) : (
-                                   <button onClick={() => setDeleteConfirmId(g.logIn.id)} className="flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-colors">
-                                      <Trash2 size={10} /> Delete
-                                   </button>
-                                 )}
-                              </div>
-                           </div>
-                         ) : <span className="text-gray-300 font-bold italic opacity-30">N/A</span>}
-                      </td>
-
-                      {/* Log OUT Cell */}
-                      <td className="p-4 border-r text-center group/cell relative min-w-[120px]">
-                         {g.logOut ? (
-                           <div className="space-y-1">
-                              <span className="px-2 py-0.5 rounded text-[10px] font-black border bg-orange-50 text-orange-800 border-orange-100 uppercase">OUT</span>
-                              <div className="text-[9px] text-gray-500 font-black">{formatDateToDDMMYYYY(g.logOut.timestamp)}</div>
-                              <div className="text-[10px] text-orange-600 font-bold italic line-clamp-1">{g.logOut.address || 'N/A'}</div>
-                              
-                              <div className="flex flex-col gap-1 mt-2 transition-opacity">
-                                 <button onClick={() => editLog(g.logOut)} className={`flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white transition-colors`}>
-                                    <Edit size={10} /> Edit
-                                 </button>
-                                 {deleteConfirmId === g.logOut.id ? (
-                                   <div className="flex gap-1">
-                                     <button onClick={() => { deleteRecord(g.logOut.id); setDeleteConfirmId(null); }} className="flex-1 text-[8px] font-black bg-red-600 text-white rounded py-1">SURE?</button>
-                                     <button onClick={() => setDeleteConfirmId(null)} className="flex-1 text-[8px] font-black bg-gray-200 text-gray-600 rounded py-1">NO</button>
-                                   </div>
-                                 ) : (
-                                   <button onClick={() => setDeleteConfirmId(g.logOut.id)} className="flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-colors">
-                                      <Trash2 size={10} /> Delete
-                                   </button>
-                                 )}
-                              </div>
-                           </div>
-                         ) : <span className="text-gray-300 font-bold italic opacity-30">N/A</span>}
-                      </td>
-
-                      {/* Form C IN Cell */}
-                      <td className="p-4 border-r text-center group/cell relative min-w-[120px]">
-                         {g.formCIn ? (
-                           <div className="space-y-1">
-                              <span className="px-2 py-0.5 rounded text-[10px] font-black border bg-purple-900 text-white uppercase shadow-sm">IN</span>
-                              <div className="text-[9px] text-purple-900 font-black">{formatDateToDDMMYYYY(g.formCIn.timestamp)}</div>
-                              <div className="text-[10px] text-purple-400 font-bold italic line-clamp-1">{g.formCIn.formC?.address || g.formCIn.address || 'N/A'}</div>
-                              
-                              <div className="flex flex-col gap-1 mt-2 transition-opacity">
-                                 <button onClick={() => editLog(g.formCIn)} className={`flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white transition-colors`}>
-                                    <Edit size={10} /> Edit
-                                 </button>
-                                 {formCDeleteId === g.formCIn.id ? (
-                                   <div className="flex gap-1">
-                                     <button onClick={() => { deleteFormCData(g.formCIn.id); setFormCDeleteId(null); }} className="flex-1 text-[8px] font-black bg-orange-600 text-white rounded py-1">CLEAR?</button>
-                                     <button onClick={() => setFormCDeleteId(null)} className="flex-1 text-[8px] font-black bg-gray-200 text-gray-600 rounded py-1">NO</button>
-                                   </div>
-                                 ) : (
-                                   <button onClick={() => setFormCDeleteId(g.formCIn.id)} className="flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-orange-50 text-orange-600 hover:bg-orange-600 hover:text-white transition-colors">
-                                      <RefreshCcw size={10} /> Clear
-                                   </button>
-                                 )}
-                              </div>
-                           </div>
-                         ) : <span className="text-gray-300 font-bold italic opacity-30">N/A</span>}
-                      </td>
-
-                      {/* Form C OUT Cell */}
-                      <td className="p-4 border-r text-center group/cell relative min-w-[120px]">
-                         {g.formCOut ? (
-                           <div className="space-y-1">
-                              <span className="px-2 py-0.5 rounded text-[10px] font-black border bg-purple-900 text-white uppercase shadow-sm">OUT</span>
-                              <div className="text-[9px] text-purple-900 font-black">{formatDateToDDMMYYYY(g.formCOut.timestamp)}</div>
-                              <div className="text-[10px] text-purple-400 font-bold italic line-clamp-1">{g.formCOut.formC?.address || g.formCOut.address || 'N/A'}</div>
-                              
-                              <div className="flex flex-col gap-1 mt-2 transition-opacity">
-                                 <button onClick={() => editLog(g.formCOut)} className={`flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white transition-colors`}>
-                                    <Edit size={10} /> Edit
-                                 </button>
-                                 {formCDeleteId === g.formCOut.id ? (
-                                   <div className="flex gap-1">
-                                     <button onClick={() => { deleteFormCData(g.formCOut.id); setFormCDeleteId(null); }} className="flex-1 text-[8px] font-black bg-orange-600 text-white rounded py-1">CLEAR?</button>
-                                     <button onClick={() => setFormCDeleteId(null)} className="flex-1 text-[8px] font-black bg-gray-200 text-gray-600 rounded py-1">NO</button>
-                                   </div>
-                                 ) : (
-                                   <button onClick={() => setFormCDeleteId(g.formCOut.id)} className="flex items-center justify-center gap-1 text-[8px] font-black uppercase py-1 px-2 rounded bg-orange-50 text-orange-600 hover:bg-orange-600 hover:text-white transition-colors">
-                                      <RefreshCcw size={10} /> Clear
-                                   </button>
-                                 )}
-                              </div>
-                           </div>
-                         ) : <span className="text-gray-300 font-bold italic opacity-30">N/A</span>}
-                      </td>
-
-                      <td className="p-4">
-                        <div className="flex flex-col gap-1.5 min-w-[150px]">
-                           { (g.formCOut?.formC || g.formCIn?.formC) ? (
-                               <div className="space-y-1">
-                                 <div className="flex items-center gap-1.5">
-                                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
-                                   <span className="font-bold text-gray-700">{(g.formCOut?.formC || g.formCIn?.formC).officialName}</span>
-                                   <span className="text-[8px] bg-purple-100 text-purple-700 px-1 rounded font-black">{(g.formCOut?.formC || g.formCIn?.formC).officialTitle}</span>
-                                 </div>
-                                 <div className="flex items-center gap-1.5 opacity-70">
-                                   <span className="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
-                                   <span className="text-[10px] font-bold">{(g.formCOut?.formC || g.formCIn?.formC).reporterName}</span>
-                                   <span className="text-[9px] font-mono">{(g.formCOut?.formC || g.formCIn?.formC).reporterPhone}</span>
-                                 </div>
-                               </div>
-                           ) : (
-                             <span className="text-gray-300 font-bold italic">N/A</span>
-                           )}
-                        </div>
-                      </td>
-                   </tr>
-                 ))}
-                  {formCLogs.length === 0 && (
-                   <tr>
-                     <td colSpan={7} className="p-12 text-center text-gray-400 italic">No activity logs found.</td>
-                   </tr>
-                 )}
-              </tbody>
-           </table>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 const DailyReport = ({ 
   records, 
@@ -2118,10 +857,6 @@ const StillInAnalytics = ({
         "Verified Officer Name": latest?.officialName || '',
         "Verified Officer Title": latest?.officialTitle || '',
         "Log Type": latest?.logType || 'FFE',
-        "FormC Official": latest?.formC?.officialName || '',
-        "FormC Official Title": latest?.formC?.officialTitle || '',
-        "FormC Reporter": latest?.formC?.reporterName || '',
-        "FormC Reporter Phone": latest?.formC?.reporterPhone || '',
         "Remarks / Dossier Remarks": latest?.remarks || '',
         "Previous Stays History": previousStays || 'No previous records'
       };
@@ -5413,8 +4148,6 @@ const MasterDB = ({
                <option value="Contact">Contact Details</option>
                <option value="Official">Official Name</option>
                <option value="Title">Official Title</option>
-               <option value="Reporter">Reporter Name</option>
-               <option value="Phone">Reporter Phone</option>
              </select>
            </div>
 
@@ -5444,18 +4177,9 @@ const MasterDB = ({
              </div>
            )}
 
-           {mType === 'Reporter' && (
-             <div>
-               <label className="input-label font-black text-indigo-600">Reporter Phone (ဖုန်းနံပါတ်)</label>
-               <input 
-                 type="text" 
-                 value={mLinked} 
-                 onChange={(e) => setMLinked(e.target.value)} 
-                 className="input-field border-indigo-200" 
-                 placeholder="Enter Reporter Phone..." 
-               />
-             </div>
-           )}
+
+
+
 
            <button onClick={addMaster} className="btn w-full bg-indigo-700 text-white hover:bg-black font-black uppercase tracking-widest shadow-lg">Save to Database</button>
 
@@ -9475,19 +8199,15 @@ export default function App() {
     const [globalDateRange, setGlobalDateRange] = useState({ from: '', to: '' });
     const [searchQuery, setSearchQuery] = useState('');
     const [analyzerTarget, setAnalyzerTarget] = useState<string | null>(null);
-    const [tehAnalysisTarget, setTehAnalysisTarget] = useState<ImmRecord | null>(null);
     const [movementFilter, setMovementFilter] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
     const [movementSearchQuery, setMovementSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<number[]>([]);
-    const [selectedTempIds, setSelectedTempIds] = useState<number[]>([]);
     const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-    const [confirmTempDeleteId, setConfirmTempDeleteId] = useState<number | null>(null);
     const [vehicleSummaries, setVehicleSummaries] = useState<VehicleSummary[]>([]);
     const [isCounterCheckOpen, setIsCounterCheckOpen] = useState<boolean>(false);
     const counterCheckSuspectCount = useMemo(() => {
       return analyzeRecordsForErrors(records).length;
     }, [records]);
-    const [tempAlert, setTempAlert] = useState<string | null>(null);
     const [passportSearchResults, setPassportSearchResults] = useState<ImmRecord[]>([]);
     const [nameSearchResults, setNameSearchResults] = useState<ImmRecord[]>([]);
     const [ffeConfirmation, setFfeConfirmation] = useState<{ show: boolean, message: string } | null>(null);
@@ -9531,7 +8251,6 @@ export default function App() {
     const [officerNameInput, setOfficerNameInput] = useState('');
     const [officerTitleInput, setOfficerTitleInput] = useState('');
     const [showBackupReminderModal, setShowBackupReminderModal] = useState(false);
-    const [tehQuery, setTehQuery] = useState('');
     const [isDBCardLoaded, setIsDBCardLoaded] = useState(false);
     const [isInitialSyncing, setIsInitialSyncing] = useState<boolean>(false);
     const [waitingElapsedSeconds, setWaitingElapsedSeconds] = useState(0);
@@ -9884,85 +8603,13 @@ export default function App() {
     }
   }, [watchList, isDBCardLoaded]);
 
-  // 1. Immediate Auto-Sync to Cloud whenever local data is added/edited by user (Removed 20-sec delay)
+  // Track sync status purely based on records status (NO automatic Firestore writes on keystrokes/idle/screen open)
   useEffect(() => {
-    if (!isDBCardLoaded || !isOnline) return;
-
-    const currentHashes: Record<string, string> = {
-      records: JSON.stringify(records),
-      tempRecords: JSON.stringify(tempRecords),
-      masterData: JSON.stringify(masterData),
-      vehicleSummaries: JSON.stringify(vehicleSummaries),
-      checkingHistory: JSON.stringify(checkingHistory),
-      dossierHistory: JSON.stringify(dossierHistory),
-      watchList: JSON.stringify(watchList)
-    };
-
-    // Skip if change came from remote sync
-    if (isRemoteSyncingRef.current) {
-      prevLocalHashesRef.current = currentHashes;
-      return;
-    }
-
-    // On initial DB load, set baseline hashes without starting sync
-    if (Object.keys(prevLocalHashesRef.current).length === 0) {
-      prevLocalHashesRef.current = currentHashes;
-      return;
-    }
-
-    // Compare with previous local hashes
-    const hasChanged = Object.keys(currentHashes).some(
-      key => currentHashes[key] !== prevLocalHashesRef.current[key]
-    );
-
-    if (hasChanged) {
-      prevLocalHashesRef.current = currentHashes;
-      setIsCloudSynced(false);
-
-      // Perform immediate sync (with a micro debounce 300ms to batch rapid keystrokes/state transitions smoothly)
-      const immediateSyncTimer = setTimeout(async () => {
-        if (!isOnline || isAutoSyncing) return;
-        setIsAutoSyncing(true);
-        try {
-          const res1 = await saveCollectionToFirestore('records', records, false);
-          const res2 = await saveCollectionToFirestore('tempRecords', tempRecords, false);
-          const res3 = await saveCollectionToFirestore('masterData', masterData, false);
-          const res4 = await saveCollectionToFirestore('vehicleSummaries', vehicleSummaries, false);
-          const res5 = await saveCollectionToFirestore('checkingHistory', checkingHistory, false);
-          const res6 = await saveCollectionToFirestore('dossierHistory', dossierHistory, false);
-          const res7 = await saveCollectionToFirestore('watchList', watchList, false);
-
-          if (res1 && res2 && res3 && res4 && res5 && res6 && res7) {
-            setIsCloudSynced(true);
-            updateLastSyncTimestamp();
-            markSynced('records');
-            markSynced('tempRecords');
-            markSynced('masterData');
-            markSynced('vehicleSummaries');
-            markSynced('checkingHistory');
-            markSynced('dossierHistory');
-            markSynced('watchList');
-          } else {
-            setIsCloudSynced(false);
-            if (res1) markSynced('records'); else markUploadFailed('records');
-            if (res2) markSynced('tempRecords'); else markUploadFailed('tempRecords');
-            if (res3) markSynced('masterData'); else markUploadFailed('masterData');
-            if (res4) markSynced('vehicleSummaries'); else markUploadFailed('vehicleSummaries');
-            if (res5) markSynced('checkingHistory'); else markUploadFailed('checkingHistory');
-            if (res6) markSynced('dossierHistory'); else markUploadFailed('dossierHistory');
-            if (res7) markSynced('watchList'); else markUploadFailed('watchList');
-          }
-        } catch (err) {
-          console.warn("Immediate auto sync error:", err);
-          setIsCloudSynced(false);
-        } finally {
-          setIsAutoSyncing(false);
-        }
-      }, 300);
-
-      return () => clearTimeout(immediateSyncTimer);
-    }
-  }, [records, tempRecords, masterData, vehicleSummaries, checkingHistory, dossierHistory, watchList, isDBCardLoaded, isOnline]);
+    const hasPending = 
+      records.some(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed') ||
+      tempRecords.some(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed');
+    setIsCloudSynced(!hasPending);
+  }, [records, tempRecords]);
 
   // Emergency Unload & Instant Local Save Engine (Zero Data Loss)
   useEffect(() => {
@@ -10017,30 +8664,6 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVis);
     };
   }, [records, tempRecords, masterData, vehicleSummaries, checkingHistory, dossierHistory, watchList]);
-
-  const analyzeAllTEH = () => {
-    if (tempRecords.length === 0) return;
-    
-    let matchCount = 0;
-    const passportsToKeep: number[] = [];
-
-    tempRecords.forEach(tr => {
-      const matchIndex = records.findIndex(r => r.passport.toUpperCase() === tr.passport.toUpperCase());
-      if (matchIndex !== -1) {
-        matchCount++;
-      } else {
-        passportsToKeep.push(tr.id);
-      }
-    });
-
-    if (matchCount > 0) {
-      // Remove matching ones from TEH
-      setTempRecords(prev => prev.filter(r => passportsToKeep.includes(r.id)));
-      showToast(`SUCCESSFULLY REMOVED ${matchCount} MATCHING RECORDS FROM TEH`);
-    } else {
-      showToast("NO MATCHING FH RECORDS FOUND IN TEH");
-    }
-  };
 
   // Helper: Auto-save to Master and link/update stay description/address
   const syncMaster = (value: string | undefined, type: MasterItem['type'], linkedValue?: string) => {
@@ -10124,9 +8747,9 @@ export default function App() {
             const cleanAddr = matchAddress.trim().toLowerCase();
             const latestStayRec = allPool
               .sort((a, b) => getRecordTime(b) - getRecordTime(a))
-              .find(x => (x.formC?.address?.toLowerCase() === cleanAddr || x.address?.toLowerCase() === cleanAddr) && (x.formC?.stayDescription || x.stayDescription));
+              .find(x => x.address?.toLowerCase() === cleanAddr && x.stayDescription);
             const latestMasterStay = [...(masterData || [])].reverse().find(x => x && x.type === 'Stay' && x.name && x.name.toLowerCase() === cleanAddr && x.linkedValue);
-            const stayDesc = latestStayRec?.formC?.stayDescription || latestStayRec?.stayDescription || latestMasterStay?.linkedValue || exactMatch?.stayDescription || '';
+            const stayDesc = latestStayRec?.stayDescription || latestMasterStay?.linkedValue || exactMatch?.stayDescription || '';
 
             return {
               ...prev,
@@ -10155,17 +8778,6 @@ export default function App() {
         setPassportSearchResults([]);
       }
 
-      // Conflict detection for TEMPORARY ENTRY warning
-      if (pp.length >= 3) {
-        const tempMatch = (tempRecords || []).find(tr => tr && tr.passport && typeof tr.passport === 'string' && tr.passport.toUpperCase() === pp);
-        if (tempMatch) {
-           setTempAlert(`Passport ${pp} is already assigned on FORM C (Temporary Entry: ${tempMatch.fullname || ''})`);
-        } else {
-           setTempAlert(null);
-        }
-      } else {
-        setTempAlert(null);
-      }
     } catch (e) {
       console.error(e);
     }
@@ -10181,9 +8793,9 @@ export default function App() {
         const allPool = [...(records || []), ...(tempRecords || [])];
         const latestRecStay = allPool
           .sort((a, b) => getRecordTime(b) - getRecordTime(a))
-          .find(x => (x.formC?.address?.toLowerCase() === cleanAddress || x.address?.toLowerCase() === cleanAddress) && (x.formC?.stayDescription || x.stayDescription));
+          .find(x => x.address?.toLowerCase() === cleanAddress && x.stayDescription);
         const latestMasterStay = [...(masterData || [])].reverse().find(x => x && x.type === 'Stay' && x.name && x.name.toLowerCase() === cleanAddress && x.linkedValue);
-        const stayDesc = latestRecStay?.formC?.stayDescription || latestRecStay?.stayDescription || latestMasterStay?.linkedValue || r.stayDescription || '';
+        const stayDesc = latestRecStay?.stayDescription || latestMasterStay?.linkedValue || r.stayDescription || '';
         
         const invRemark = getLatestVerificationRemark(pp, dossierHistory, records);
         const latestCheck = (checkingHistory || []).find(c => c && c.passport && typeof c.passport === 'string' && c.passport.toUpperCase() === pp);
@@ -10223,7 +8835,6 @@ export default function App() {
       });
       setPassportSearchResults([]);
       setNameSearchResults([]);
-      setTempAlert(null);
     } catch (e) {
       console.error(e);
     }
@@ -10266,9 +8877,9 @@ export default function App() {
         const allPool = [...(records || []), ...(tempRecords || [])];
         const latestRecStay = allPool
           .sort((a, b) => getRecordTime(b) - getRecordTime(a))
-          .find(x => (x.formC?.address?.toLowerCase() === cleanAddress || x.address?.toLowerCase() === cleanAddress) && (x.formC?.stayDescription || x.stayDescription));
+          .find(x => x.address?.toLowerCase() === cleanAddress && x.stayDescription);
         const latestMasterStay = [...(masterData || [])].reverse().find(x => x && x.type === 'Stay' && x.name && x.name.toLowerCase() === cleanAddress && x.linkedValue);
-        const stayDesc = latestRecStay?.formC?.stayDescription || latestRecStay?.stayDescription || latestMasterStay?.linkedValue || r.stayDescription || '';
+        const stayDesc = latestRecStay?.stayDescription || latestMasterStay?.linkedValue || r.stayDescription || '';
 
         const invRemark = getLatestVerificationRemark(pp, dossierHistory, records);
         const latestCheck = (checkingHistory || []).find(c => c && c.passport && typeof c.passport === 'string' && c.passport.toUpperCase() === pp);
@@ -10308,7 +8919,6 @@ export default function App() {
       });
       setPassportSearchResults([]);
       setNameSearchResults([]);
-      setTempAlert(null);
     } catch (e) {
       console.error(e);
     }
@@ -10420,14 +9030,13 @@ export default function App() {
       // 1. Prioritize latest from records
       const all = [...(records || []), ...(tempRecords || [])].sort((a,b) => getRecordTime(b) - getRecordTime(a));
       const latestWithTitle = all.find(r => 
-        (r && r.officialName && typeof r.officialName === 'string' && r.officialName.toLowerCase().replace(/\s+/g, '') === cleanVal && r.officialTitle) ||
-        (r && r.formC?.officialName && typeof r.formC.officialName === 'string' && r.formC.officialName.toLowerCase().replace(/\s+/g, '') === cleanVal && r.formC.officialTitle)
+        r && r.officialName && typeof r.officialName === 'string' && r.officialName.toLowerCase().replace(/\s+/g, '') === cleanVal && r.officialTitle
       );
       
       // 2. Fallback to Master Data
       const masterMatch = [...(masterData || [])].reverse().find(m => m && m.type === 'Official' && m.name && typeof m.name === 'string' && m.name.toLowerCase().replace(/\s+/g, '') === cleanVal && m.linkedValue);
 
-      const title = (latestWithTitle?.formC?.officialName?.toLowerCase().replace(/\s+/g, '') === cleanVal ? latestWithTitle?.formC?.officialTitle : latestWithTitle?.officialTitle) || masterMatch?.linkedValue || '';
+      const title = latestWithTitle?.officialTitle || masterMatch?.linkedValue || '';
       if (title) {
         setFormData(prev => ({ ...prev, officialTitle: title }));
       }
@@ -10522,8 +9131,6 @@ export default function App() {
       if (newRecord.contactDetails) syncMaster(newRecord.contactDetails, 'Contact');
       if (newRecord.officialName) syncMaster(newRecord.officialName, 'Official');
       if (newRecord.officialTitle) syncMaster(newRecord.officialTitle, 'Title');
-      if (newRecord.formC?.reporterName) syncMaster(newRecord.formC.reporterName, 'Reporter');
-      if (newRecord.formC?.reporterPhone) syncMaster(newRecord.formC.reporterPhone, 'Phone');
 
       const activeDevName = cloudAuthUser?.deviceName || (typeof navigator !== 'undefined' && navigator.userAgent.includes('Mobile') ? 'Mobile Phone' : 'Desktop Device');
       const recordToSave: ImmRecord = {
@@ -10540,7 +9147,7 @@ export default function App() {
         setEditTarget(null);
         logActivity({
           action: 'UPDATE',
-          module: recordToSave.logType === 'FCR' ? 'FCR' : 'FFE',
+          module: 'FFE',
           officerName: recordToSave.officialName || (recordToSave.officialTitle && recordToSave.officialName ? `${recordToSave.officialTitle} ${recordToSave.officialName}` : cloudAuthUser?.username),
           officerRole: cloudAuthUser?.role || 'Editor',
           targetId: recordToSave.passport,
@@ -10553,7 +9160,7 @@ export default function App() {
         setTempRecords(prev => prev.filter(tr => tr && tr.passport && typeof tr.passport === 'string' && tr.passport.toUpperCase() !== recordToSave.passport.toUpperCase()));
         logActivity({
           action: 'CREATE',
-          module: recordToSave.logType === 'FCR' ? 'FCR' : 'FFE',
+          module: 'FFE',
           officerName: recordToSave.officialName || (recordToSave.officialTitle && recordToSave.officialName ? `${recordToSave.officialTitle} ${recordToSave.officialName}` : cloudAuthUser?.username),
           officerRole: cloudAuthUser?.role || 'Editor',
           targetId: recordToSave.passport,
@@ -10561,7 +9168,7 @@ export default function App() {
         });
       }
 
-      // Direct instant upload to Cloud Server for zero-confusion verification
+      // Direct instant upload to Cloud Server for zero-confusion verification on Form Submit
       if (isOnline) {
         showToast("📡 Cloud Server ပေါ်သို့ တိုက်ရိုက် ပို့ဆောင်နေပါသည်...");
         saveCollectionToFirestore('records', nextRecordsList, true, true).then((ok) => {
@@ -10569,14 +9176,16 @@ export default function App() {
             const confirmedAt = new Date().toISOString();
             setRecords(prev => prev.map(r => (r.id === recordToSave.id || (r.passport === recordToSave.passport && r.timestamp === recordToSave.timestamp)) ? { ...r, syncStatus: 'synced', serverSyncedAt: confirmedAt } : r));
             showToast("✓ Cloud Server ပေါ်သို့ အောင်မြင်စွာ ရောက်ရှိ သိမ်းဆည်းပြီးပါပြီ (Server Verified ✓)");
+            // Ensure any new master data picks from this record are synced as well
+            saveCollectionToFirestore('masterData', masterData, true, false).catch(() => {});
           } else {
-            showToast("💾 ဖုန်းထဲတွင် သိမ်းဆည်းပြီးပါပြီ (လတ်တလော ဆာဗာမရောက်သေးပါ - Auto-Sync ပို့ပါမည်)");
+            showToast("💾 ဖုန်းထဲတွင် သိမ်းဆည်းပြီးပါပြီ (ဆာဗာသို့ ပို့ရန် Sync ခလုတ်ကို နှိပ်နိုင်ပါသည်)");
           }
         }).catch(() => {
-          showToast("💾 ဖုန်းထဲတွင် သိမ်းဆည်းပြီးပါပြီ (လတ်တလော ဆာဗာမရောက်သေးပါ - Auto-Sync ပို့ပါမည်)");
+          showToast("💾 ဖုန်းထဲတွင် သိမ်းဆည်းပြီးပါပြီ (ဆာဗာသို့ ပို့ရန် Sync ခလုတ်ကို နှိပ်နိုင်ပါသည်)");
         });
       } else {
-        showToast("💾 အင်တာနက်မရှိပါ - ဖုန်းထဲတွင် လုံခြုံစွာသိမ်းထားပြီး လိုင်းရပါက Auto-Sync ပြုလုပ်ပေးပါမည်");
+        showToast("💾 အင်တာနက်မရှိပါ - ဖုန်းထဲတွင် သိမ်းဆည်းထားပြီး လိုင်းရပါက Cloud Sync ခလုတ်ဖြင့် ပို့ဆောင်နိုင်ပါသည်");
       }
 
       // Automatically sync checkpoint status to checkingHistory as checked
@@ -10714,10 +9323,8 @@ export default function App() {
           end: r.stayTo || '', allowed: r.totalDays || '', vInfo: r.vehicleInfo || '', 
           agent: r.broughtBy || '',
           contact: r.contactDetails || '',
-          offName: r.formC?.officialName || r.officialName || '',
-          offTitle: r.formC?.officialTitle || r.officialTitle || '',
-          repName: r.formC?.reporterName || '',
-          repPhone: r.formC?.reporterPhone || '',
+          offName: r.officialName || '',
+          offTitle: r.officialTitle || '',
           in: '', out: '', inTime: 0, outTime: 0, 
           latestTime: 0, lastId: r.id 
         };
@@ -10731,10 +9338,8 @@ export default function App() {
           dob: r.dob || map[pp].dob || '',
           agent: r.broughtBy || '',
           contact: r.contactDetails || map[pp].contact,
-          offName: r.formC?.officialName || r.officialName || map[pp].offName,
-          offTitle: r.formC?.officialTitle || r.officialTitle || map[pp].offTitle,
-          repName: r.formC?.reporterName || map[pp].repName,
-          repPhone: r.formC?.reporterPhone || map[pp].repPhone,
+          offName: r.officialName || r.officialName || map[pp].offName,
+          offTitle: r.officialTitle || r.officialTitle || map[pp].offTitle,
           start: r.stayFrom, end: r.stayTo, allowed: r.totalDays, 
           lastId: r.id 
         });
@@ -10743,10 +9348,8 @@ export default function App() {
           out: r.timestamp,
           outTime: recTime,
           lastId: r.id,
-          offName: r.formC?.officialName || r.officialName || map[pp].offName,
-          offTitle: r.formC?.officialTitle || r.officialTitle || map[pp].offTitle,
-          repName: r.formC?.reporterName || map[pp].repName,
-          repPhone: r.formC?.reporterPhone || map[pp].repPhone,
+          offName: r.officialName || r.officialName || map[pp].offName,
+          offTitle: r.officialTitle || r.officialTitle || map[pp].offTitle,
         });
       }
       if (recTime > map[pp].latestTime) {
@@ -10791,15 +9394,10 @@ export default function App() {
     if (!match.linkedValue) {
       const all = [...records, ...tempRecords].sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
       const latestWithTitle = all.find(r => 
-        (r.officialName?.toLowerCase().replace(/\s+/g, '') === val && r.officialTitle) ||
-        (r.formC?.officialName?.toLowerCase().replace(/\s+/g, '') === val && r.formC.officialTitle)
+        r.officialName?.toLowerCase().replace(/\s+/g, '') === val && r.officialTitle
       );
       if (latestWithTitle) {
-        if (latestWithTitle.formC?.officialName?.toLowerCase().replace(/\s+/g, '') === val) {
-          finalTitle = latestWithTitle.formC.officialTitle;
-        } else {
-          finalTitle = latestWithTitle.officialTitle || 'Officer';
-        }
+        finalTitle = latestWithTitle.officialTitle || 'Officer';
       } else {
         const titleMatch = masterData.find(m => m.type === 'Title' && m.name.trim() !== '');
         if (titleMatch) finalTitle = titleMatch.name;
@@ -11597,11 +10195,11 @@ export default function App() {
                   type="text" 
                   value={formData.passport || ''}
                   onChange={(e) => handlePassportInput(e.target.value)}
-                  className={`input-field pl-10 h-11 ${tempAlert ? 'border-amber-400 bg-amber-50' : 'border-indigo-200'} text-gray-900 font-black`}
+                  className="input-field pl-10 h-11 border-indigo-200 text-gray-900 font-black"
                   required
                   placeholder="Enter Passport..."
                 />
-                <Database size={16} className={`absolute left-3 top-3.5 ${tempAlert ? 'text-amber-500' : 'text-indigo-400'}`} />
+                <Database size={16} className="absolute left-3 top-3.5 text-indigo-400" />
                 {formData.passport && (
                   <button 
                     type="button"
@@ -11634,12 +10232,7 @@ export default function App() {
                 </div>
               )}
 
-              {tempAlert && (
-                <div className="mt-2 p-2 bg-amber-100 text-amber-900 text-[10px] font-black uppercase rounded-lg border border-amber-200 flex items-center gap-2 animate-in slide-in-from-top-1">
-                  <AlertCircle size={14} />
-                  {tempAlert}
-                </div>
-              )}
+
             </div>
             <div className="relative group">
               <label className="input-label text-slate-700 font-bold">အမည် (Full Name)</label>
@@ -11809,9 +10402,9 @@ export default function App() {
                   const allPool = [...(records || []), ...(tempRecords || [])];
                   const latestStayRec = allPool
                     .sort((a, b) => getRecordTime(b) - getRecordTime(a))
-                    .find(x => (x.formC?.address?.toLowerCase() === cleanAddr || x.address?.toLowerCase() === cleanAddr) && (x.formC?.stayDescription || x.stayDescription));
+                    .find(x => x.address?.toLowerCase() === cleanAddr && x.stayDescription);
                   const latestMaster = [...(masterData || [])].reverse().find(m => m && m.type === 'Stay' && m.name && m.name.toLowerCase() === cleanAddr && m.linkedValue);
-                  const desc = latestStayRec?.formC?.stayDescription || latestStayRec?.stayDescription || latestMaster?.linkedValue || '';
+                  const desc = latestStayRec?.stayDescription || latestMaster?.linkedValue || '';
                   setFormData(prev => ({ 
                     ...prev, 
                     address: val,
@@ -12041,194 +10634,6 @@ export default function App() {
     </motion.div>
   );
 
-  const renderTempHistory = () => null;
-
-  const renderTempHistory_OLD = () => {
-    const toggleSelectAll = () => {
-      setSelectedTempIds(selectedTempIds.length === tempRecords.length ? [] : tempRecords.map(r => r.id));
-    };
-    
-    const filteredTempRecords = tempRecords.filter(r => 
-      r.fullname.toLowerCase().includes(tehQuery.toLowerCase()) || 
-      r.passport.toLowerCase().includes(tehQuery.toLowerCase())
-    );
-
-    const toggleSelect = (id: number) => {
-      setSelectedTempIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-    };
-
-    const deleteTempRecord = (id: number) => {
-      setTempRecords(prev => prev.filter(r => r.id !== id));
-      setConfirmTempDeleteId(null);
-      showToast("TEMPORARY RECORD DELETED");
-    };
-
-    const confirmMoveToFH = (tr: ImmRecord) => {
-      const exists = records.some(r => r.passport.toUpperCase() === tr.passport.toUpperCase());
-      if (exists) {
-        setRecords(prev => prev.map(r => r.passport.toUpperCase() === tr.passport.toUpperCase() ? { ...r, ...tr, id: r.id } : r));
-      } else {
-        setRecords(prev => [{ ...tr, id: Date.now() }, ...prev]);
-      }
-      setTempRecords(prev => prev.filter(r => r.id !== tr.id));
-      setTehAnalysisTarget(null);
-      showToast("PROMOTED TO FLIGHT HISTORY (FH)");
-    };
-
-    const editTempRecord = (r: ImmRecord) => {
-      setPreFilledTempId(r.id);
-      setActiveTab('formC');
-    };
-
-    const exportTempToExcel = () => {
-      const data = tempRecords.map(r => ({
-        "Timestamp": r.timestamp,
-        "Status": r.mode,
-        "Full Name": r.fullname,
-        "Passport": r.passport,
-        "Nationality": r.nationality,
-        "Gender": r.gender,
-        "Visa Type": r.visaType,
-        "Address": r.address,
-        "Vehicle Info": r.vehicleInfo,
-        "Total Days": r.totalDays,
-        "Stay From": r.stayFrom,
-        "Stay To": r.stayTo,
-        "Official": r.formC?.officialName || 'N/A',
-        "Reporter": r.formC?.reporterName || 'N/A',
-        "Phone": r.formC?.reporterPhone || 'N/A',
-        "Remarks": r.remarks || ''
-      }));
-      const ws = XLSX.utils.json_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "TempRecords");
-      XLSX.writeFile(wb, `Temporary_Entries_${new Date().toISOString().split('T')[0]}.xlsx`);
-    };
-
-    const batchDelete = () => {
-      if (selectedTempIds.length === 0) return;
-      setTempRecords(prev => prev.filter(r => !selectedTempIds.includes(r.id)));
-      setSelectedTempIds([]);
-      showToast("TEMPORARY RECORDS REMOVED");
-    };
-
-    return (
-      <div className="max-w-[1600px] mx-auto py-8 px-4 space-y-6">
-        <div className="card shadow-2xl border-t-8 border-amber-500">
-          <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-6 no-print">
-             <div className="flex flex-col md:flex-row items-center gap-6 w-full">
-                <div className="flex items-center gap-4">
-                   <div className="bg-amber-100 p-3 rounded-full text-amber-700">
-                     <Clock size={28} />
-                   </div>
-                   <div>
-                     <h2 className="text-2xl font-black uppercase text-gray-800 tracking-tight">Temporary Entry History</h2>
-                     <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Records created via Form C searching</p>
-                   </div>
-                </div>
-                
-                <div className="flex-1 relative group max-w-md w-full ml-auto">
-                   <input 
-                     type="text" 
-                     placeholder="Search TEH records..." 
-                     value={tehQuery}
-                     onChange={(e) => setTehQuery(e.target.value)}
-                     className="input-field pl-10 h-10 text-xs font-bold border-amber-200 focus:border-amber-500 transition-all text-gray-800 bg-amber-50/30" 
-                   />
-                   <Search size={18} className="absolute left-3 top-2.5 text-amber-400 group-focus-within:text-amber-600" />
-                   {tehQuery && (
-                     <button 
-                       onClick={() => setTehQuery('')}
-                       className="absolute right-3 top-2.5 text-amber-400 hover:text-red-500 transition-colors"
-                     >
-                       <X size={18} />
-                     </button>
-                   )}
-                </div>
-             </div>
-          </div>
-
-          <div className="flex flex-wrap justify-between items-center mb-6 gap-4 border-b border-amber-100 pb-4">
-             <div className="flex gap-2">
-                <button onClick={analyzeAllTEH} className="btn bg-indigo-600 text-white hover:bg-black text-[10px] uppercase font-black px-4 flex items-center gap-2"><RefreshCcw size={14} /> Analysis All</button>
-                {selectedTempIds.length > 0 && (
-                  <button onClick={batchDelete} className="btn bg-red-600 text-white hover:bg-black text-[10px] uppercase font-black px-4 flex items-center gap-2 animate-pulse"><Trash2 size={14} /> Delete Selected ({selectedTempIds.length})</button>
-                )}
-                <button onClick={exportTempToExcel} className="btn bg-emerald-600 text-white hover:bg-emerald-700 text-[10px] uppercase font-black px-4 flex items-center gap-2"><Download size={14} /> Export Excel</button>
-             </div>
-             <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest bg-amber-50 px-3 py-1 rounded-full border border-amber-100">Showing {filteredTempRecords.length} of {tempRecords.length} records</div>
-          </div>
-
-          <div className="overflow-x-auto border rounded-2xl shadow-sm">
-             <table className="w-full text-left min-w-[1200px]">
-                <thead className="bg-gray-900 text-white uppercase text-[10px] tracking-widest font-black">
-                   <tr>
-                      <th className="p-4 text-center w-12 border-r border-white/10">
-                        <input type="checkbox" checked={tempRecords.length > 0 && selectedTempIds.length === tempRecords.length} onChange={toggleSelectAll} className="rounded" />
-                      </th>
-                      <th className="p-4 border-r border-white/10">Timestamp</th>
-                      <th className="p-4 border-r border-white/10">Identity</th>
-                      <th className="p-4 border-r border-white/10">Stay Location</th>
-                      <th className="p-4 border-r border-white/10">Authority / Reporter</th>
-                      <th className="p-4 border-r border-white/10">Remarks</th>
-                      <th className="p-4 text-center border-r border-white/10">Status</th>
-                      <th className="p-4 text-center sticky right-0 bg-gray-900">Action</th>
-                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 text-[11px] text-gray-700 font-bold">
-                   {filteredTempRecords.map(r => (
-                     <tr key={r.id} className="hover:bg-amber-50/30 transition-colors">
-                        <td className="p-4 text-center border-r border-gray-100 uppercase">
-                          <input type="checkbox" checked={selectedTempIds.includes(r.id)} onChange={() => toggleSelect(r.id)} className="rounded" />
-                        </td>
-                        <td className="p-4 border-r border-gray-100">
-                           <div className="text-gray-400 mb-1 font-medium">{r.timestamp}</div>
-                           <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-black text-[9px] tracking-tighter shadow-sm border border-amber-200">TEMPORARY ENTRY</span>
-                        </td>
-                        <td className="p-4 border-r border-gray-100">
-                           <div className="font-black text-gray-900 text-sm mb-1">{r.fullname}</div>
-                           <div className="font-mono text-gray-400 font-bold">{r.passport} | {r.nationality}</div>
-                        </td>
-                        <td className="p-4 border-r border-gray-100">
-                           <div className="font-black text-amber-700 mb-1">{r.address}</div>
-                           <div className="text-[10px] text-gray-400 font-bold">{r.vehicleInfo || '-'}</div>
-                        </td>
-                        <td className="p-4 border-r border-gray-100">
-                           <div className="font-black text-gray-800 uppercase mb-1">{r.formC?.officialName}</div>
-                           <div className="text-gray-400 uppercase text-[9px] font-bold">{r.formC?.reporterName} ({r.formC?.reporterPhone})</div>
-                        </td>
-                        <td className="p-4 border-r border-gray-100 italic text-gray-500 max-w-[200px] truncate">
-                           {r.remarks || '-'}
-                        </td>
-                        <td className="p-4 text-center border-r border-gray-100">
-                           <span className={`px-4 py-1.5 rounded-lg font-black text-[10px] border-2 ${r.mode === 'IN' ? 'bg-emerald-50 text-emerald-800 border-emerald-100' : 'bg-orange-50 text-orange-800 border-orange-100'}`}>{r.mode === 'IN' ? 'CHECKED IN' : 'CHECKED OUT'}</span>
-                        </td>
-                        <td className="p-2 text-center sticky right-0 bg-white shadow-[-4px_0_10px_-4px_rgba(0,0,0,0.05)] text-gray-700">
-                           <div className="flex flex-col gap-1">
-                              <button onClick={() => editTempRecord(r)} className="text-[9px] bg-blue-50 text-blue-700 px-2 py-1 rounded-md font-black hover:bg-blue-100 uppercase">Edit</button>
-                              <button onClick={() => setTehAnalysisTarget(r)} className="text-[9px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md font-black hover:bg-indigo-100 uppercase">Analysis</button>
-                              {confirmTempDeleteId === r.id ? (
-                                <div className="flex gap-1 animate-in zoom-in-95">
-                                  <button onClick={() => deleteTempRecord(r.id)} className="text-[8px] bg-red-600 text-white px-2 py-1 rounded-md font-black uppercase">YES</button>
-                                  <button onClick={() => setConfirmTempDeleteId(null)} className="text-[8px] bg-gray-200 text-gray-600 px-2 py-1 rounded-md font-black uppercase">NO</button>
-                                </div>
-                              ) : (
-                                <button onClick={() => setConfirmTempDeleteId(r.id)} className="text-[9px] bg-red-50 text-red-500 px-2 py-1 rounded-md font-black hover:bg-red-100 uppercase">Delete</button>
-                              )}
-                           </div>
-                        </td>
-                     </tr>
-                   ))}
-                </tbody>
-             </table>
-             {filteredTempRecords.length === 0 && (
-               <div className="p-12 text-center text-gray-300 font-black uppercase tracking-widest">No matching temporary records found</div>
-             )}
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   const renderHistory = () => {
     const toggleSelectAll = () => {
@@ -12272,7 +10677,7 @@ export default function App() {
       if (target) {
         logActivity({
           action: 'DELETE',
-          module: target.logType === 'FCR' ? 'FCR' : 'FFE',
+          module: 'FFE',
           officerName: cloudAuthUser?.username,
           officerRole: cloudAuthUser?.role || 'Editor',
           targetId: target.passport,
@@ -13070,7 +11475,7 @@ export default function App() {
     if (target) {
       logActivity({
         action: 'DELETE',
-        module: target.logType === 'FCR' ? 'FCR' : 'FFE',
+        module: 'FFE',
         officerName: cloudAuthUser?.username,
         officerRole: cloudAuthUser?.role || 'Editor',
         targetId: target.passport,
@@ -13563,98 +11968,6 @@ export default function App() {
           />
         )}
       </main>
-
-      {/* Analyzer Modal */}
-      <AnimatePresence>
-        {tehAnalysisTarget && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setTehAnalysisTarget(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-             <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative bg-white w-full max-w-xl rounded-2xl overflow-hidden shadow-2xl">
-                <div className="p-6 bg-indigo-900 text-white flex justify-between items-center">
-                   <h3 className="text-xl font-black tracking-tight flex items-center gap-3 uppercase"><RefreshCcw /> TEH Analysis Profile</h3>
-                   <button onClick={() => setTehAnalysisTarget(null)} className="hover:bg-white/10 p-2 rounded-full"><X /></button>
-                </div>
-                <div className="p-8 space-y-6">
-                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                      <div className="text-xs font-black text-gray-400 uppercase mb-2">Analyzing Target</div>
-                      <div className="text-lg font-black text-indigo-900">{tehAnalysisTarget.fullname}</div>
-                      <div className="font-mono text-sm text-gray-500 font-bold">{tehAnalysisTarget.passport} | {tehAnalysisTarget.nationality}</div>
-                   </div>
-
-                   <div className="space-y-4">
-                      {records.some(r => r.passport.toUpperCase() === tehAnalysisTarget.passport.toUpperCase()) ? (
-                        <div className="p-4 bg-emerald-50 border-2 border-emerald-100 rounded-xl">
-                           <div className="flex items-center gap-2 text-emerald-700 font-black uppercase text-xs mb-2">
-                              <CheckCircle2 size={16} /> Matching Flight History Found
-                           </div>
-                           <p className="text-[10px] text-emerald-600 font-bold">
-                              This person has a permanent record in Flight History. You can synchronize the Form C details from this Temporary Entry into the Flight History log.
-                           </p>
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-amber-50 border-2 border-amber-100 rounded-xl">
-                           <div className="flex items-center gap-2 text-amber-700 font-black uppercase text-xs mb-2">
-                              <AlertCircle size={16} /> No FH Match Found
-                           </div>
-                           <p className="text-[10px] text-amber-600 font-bold">
-                              This person exists only in Temporary History. You can "Promote" them to Flight History to create a permanent record.
-                           </p>
-                        </div>
-                      )}
-                   </div>
-
-                   <div className="flex gap-4 pt-4">
-                      <button onClick={() => setTehAnalysisTarget(null)} className="btn flex-1 bg-gray-100 text-gray-600 uppercase text-xs font-black">Cancel</button>
-                      <button 
-                        onClick={() => {
-                          const r = records.find(rec => rec.passport.toUpperCase() === tehAnalysisTarget.passport.toUpperCase());
-                          if (r) {
-                            // If match, go to edit it
-                            startEdit(r);
-                            setTehAnalysisTarget(null);
-                          } else {
-                            // If no match, start new entry with this data
-                            setFormData(prev => ({
-                              ...tehAnalysisTarget,
-                              id: undefined,
-                              timestamp: undefined,
-                              mode: currentMode,
-                              vehicleInfo: prev.vehicleInfo,
-                              officialName: prev.officialName,
-                              officialTitle: prev.officialTitle
-                            }));
-                            setTehAnalysisTarget(null);
-                            setActiveTab('entry');
-                          }
-                        }}
-                        className="btn flex-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-700 hover:text-white uppercase text-xs font-black"
-                      >
-                        Edit FH Link
-                      </button>
-                      <button 
-                        onClick={() => {
-                          // Logic for moving to FH
-                          const tr = tehAnalysisTarget;
-                          const exists = records.some(r => r.passport.toUpperCase() === tr.passport.toUpperCase());
-                          if (exists) {
-                            setRecords(prev => prev.map(r => r.passport.toUpperCase() === tr.passport.toUpperCase() ? { ...r, ...tr, id: r.id } : r));
-                          } else {
-                            setRecords(prev => [{ ...tr, id: Date.now() }, ...prev]);
-                          }
-                          setTempRecords(prev => prev.filter(r => r.id !== tr.id));
-                          setTehAnalysisTarget(null);
-                          showToast("SUCCESSFULLY MOVED TO FH");
-                        }}
-                        className="btn flex-1 bg-indigo-700 text-white hover:bg-black uppercase text-xs font-black shadow-lg"
-                      >
-                        Confirm & Move
-                      </button>
-                   </div>
-                </div>
-             </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* Analyzer Modal */}
       <AnimatePresence>

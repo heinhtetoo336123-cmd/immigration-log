@@ -341,7 +341,6 @@ export const IndividualSearch = ({
   const computedMovementMap = useMemo(() => {
     const map: Record<string, any> = {};
     [...records]
-      .filter(r => r.logType !== 'FCR')
       .sort((a, b) => {
         const diff = parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp);
         if (diff !== 0) return diff;

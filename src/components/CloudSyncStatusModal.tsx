@@ -282,7 +282,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  ဤနေရာမှတစ်ဆင့် Flight/Foreigner Entries (FFE)၊ Form C (FCR)၊ Master Data၊ Checkpoint နှင့် History စာရင်းအားလုံးကို Google Cloud Server နှင့် တပြိုင်နက် Upload/Download Sync ပြုလုပ်နိုင်ပါသည်။
+                  ဤနေရာမှတစ်ဆင့် Flight/Foreigner Entries (FFE)၊ Master Data၊ Checkpoint နှင့် History စာရင်းအားလုံးကို Google Cloud Server နှင့် တပြိုင်နက် Upload/Download Sync ပြုလုပ်နိုင်ပါသည်။
                 </p>
 
                 <div className="flex flex-col sm:flex-row gap-2 pt-1">

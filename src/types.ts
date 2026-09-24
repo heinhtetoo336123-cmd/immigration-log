@@ -177,8 +177,8 @@ export interface MovementData {
   contact: string;
   offName: string;
   offTitle: string;
-  repName: string;
-  repPhone: string;
+  repName?: string;
+  repPhone?: string;
   in: string;
   out: string;
   inTime: number;
@@ -277,7 +277,6 @@ export type ActivityActionType =
 
 export type ActivityModule = 
   | 'FFE' 
-  | 'FCR' 
   | 'CHECKING' 
   | 'MASTER' 
   | 'WATCHLIST' 

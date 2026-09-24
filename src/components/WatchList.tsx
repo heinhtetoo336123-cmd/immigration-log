@@ -575,8 +575,8 @@ export const WatchList: React.FC<WatchListProps> = ({
             if (!matchTypes.includes('Father in Remarks')) matchTypes.push('Father in Remarks');
           } else if (rFormC && (isNameMatching(pFather, rFormC.fatherName) || isNameMatching(pFather, rFormC.father) || isNameMatching(pFather, rFormC.guardianName))) {
             hasRelatedMatch = true;
-            recordMatchReasons.push(`အဖအမည် (${person.fatherName}) အား Form C အချက်အလက်တွင် တွေ့ရှိ`);
-            if (!matchTypes.includes('Father in Form C')) matchTypes.push('Father in Form C');
+            recordMatchReasons.push(`အဖအမည် (${person.fatherName}) အား ဆက်စပ်မှတ်တမ်းတွင် တွေ့ရှိ`);
+            if (!matchTypes.includes('Father in Records')) matchTypes.push('Father in Records');
           }
         }
 
@@ -592,8 +592,8 @@ export const WatchList: React.FC<WatchListProps> = ({
             if (!matchTypes.includes('Mother in Remarks')) matchTypes.push('Mother in Remarks');
           } else if (rFormC && (isNameMatching(pMother, rFormC.motherName) || isNameMatching(pMother, rFormC.mother))) {
             hasRelatedMatch = true;
-            recordMatchReasons.push(`အမိအမည် (${person.motherName}) အား Form C တွင် တွေ့ရှိ`);
-            if (!matchTypes.includes('Mother in Form C')) matchTypes.push('Mother in Form C');
+            recordMatchReasons.push(`အမိအမည် (${person.motherName}) အား ဆက်စပ်မှတ်တမ်းတွင် တွေ့ရှိ`);
+            if (!matchTypes.includes('Mother in Records')) matchTypes.push('Mother in Records');
           }
         }
 

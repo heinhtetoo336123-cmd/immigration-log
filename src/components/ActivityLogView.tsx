@@ -43,8 +43,6 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
 
   // System Wide Data Summary Breakdown
   const systemSummary = useMemo(() => {
-    const ffeCount = records.filter(r => r.logType === 'FFE' || !r.logType).length;
-    const fcrCount = records.filter(r => r.logType === 'FCR').length;
     const inCount = records.filter(r => r.mode === 'IN').length;
     const outCount = records.filter(r => r.mode === 'OUT').length;
     const totalRecords = records.length;
@@ -55,8 +53,6 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
 
     return {
       totalRecords,
-      ffeCount,
-      fcrCount,
       inCount,
       outCount,
       totalWatchList,
@@ -186,8 +182,6 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
     switch (module) {
       case 'FFE':
         return <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-extrabold text-[10px]">FFE Entry</span>;
-      case 'FCR':
-        return <span className="px-2 py-0.5 rounded bg-teal-50 text-teal-700 font-extrabold text-[10px]">Form C</span>;
       case 'CHECKING':
         return <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-700 font-extrabold text-[10px]">Checking</span>;
       case 'MASTER':
@@ -301,11 +295,11 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
             </div>
 
             <div className="bg-slate-900/80 border border-purple-500/30 rounded-2xl p-3 text-center shadow-inner">
-              <div className="text-[10px] text-slate-400 font-black uppercase">FFE လေယာဉ် / FCR</div>
+              <div className="text-[10px] text-slate-400 font-black uppercase">စစ်ဆေးချက်များ (Checks)</div>
               <div className="text-lg sm:text-xl font-black text-cyan-300">
-                {systemSummary.ffeCount} <span className="text-xs text-slate-400 font-normal">/ {systemSummary.fcrCount}</span>
+                {systemSummary.totalChecks}
               </div>
-              <div className="text-[9px] text-slate-400 mt-0.5">Flight vs Form C</div>
+              <div className="text-[9px] text-slate-400 mt-0.5">Checking History</div>
             </div>
 
             <div className="bg-slate-900/80 border border-purple-500/30 rounded-2xl p-3 text-center shadow-inner">
@@ -402,7 +396,6 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
             >
               <option value="ALL">All Modules</option>
               <option value="FFE">FFE Flight Entry</option>
-              <option value="FCR">Form C</option>
               <option value="CHECKING">Checking / Still In</option>
               <option value="MASTER">Master Data (MD)</option>
               <option value="WATCHLIST">Watchlist</option>
