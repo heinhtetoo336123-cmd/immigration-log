@@ -75,6 +75,207 @@ export const getSyncedHash = (collectionName: string): string | undefined => {
   return lastSyncedHashes.get(collectionName);
 };
 
+// Deleted IDs Queue Management (Tracks deletions offline and purges them upon sync)
+export const getDeletedRecordIds = (collectionName: string): string[] => {
+  try {
+    const raw = localStorage.getItem(`imm_deleted_queue_${collectionName}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const getAllDeletedQueues = (): Record<string, string[]> => {
+  const collections = ['records', 'tempRecords', 'masterData', 'vehicleSummaries', 'checkingHistory', 'dossierHistory', 'watchList'];
+  const res: Record<string, string[]> = {};
+  for (const col of collections) {
+    const ids = getDeletedRecordIds(col);
+    if (ids.length > 0) res[col] = ids;
+  }
+  return res;
+};
+
+export const trackDeletedRecord = (collectionName: string, id: string | number) => {
+  if (id === undefined || id === null) return;
+  const strId = String(id);
+  try {
+    const current = getDeletedRecordIds(collectionName);
+    if (!current.includes(strId)) {
+      current.push(strId);
+      localStorage.setItem(`imm_deleted_queue_${collectionName}`, JSON.stringify(current));
+    }
+  } catch (e) {
+    console.warn("Failed to queue deleted record ID:", e);
+  }
+};
+
+export const clearDeletedRecordIds = (collectionName: string) => {
+  try {
+    localStorage.removeItem(`imm_deleted_queue_${collectionName}`);
+  } catch {}
+};
+
+/**
+ * Direct & Synchronized Deletion from Firestore:
+ * 1. Tracks ID in local deleted queue immediately.
+ * 2. If online and authenticated, loads appData/{collectionName} (and chunk parts if chunked)
+ *    and removes the matching item, decrementing totalItems count on Firestore so the cloud count updates instantly (e.g. 1748 -> 1747).
+ * 3. Updates _metadata timestamp so all connected devices recognize the change.
+ */
+export const deleteRecordFromFirestore = async (collectionName: string, id: string | number): Promise<boolean> => {
+  trackDeletedRecord(collectionName, id);
+  if (isQuotaExhausted) return false;
+  try {
+    await ensureAuthenticated();
+    const strId = String(id);
+    const docRef = doc(db, 'appData', collectionName);
+    const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
+
+    if (snap.exists()) {
+      const data = snap.data();
+      const now = new Date().toISOString();
+
+      if (data?.isChunked && typeof data?.chunkCount === 'number' && data.chunkCount > 0) {
+        let removedCount = 0;
+        let newTotal = typeof data.totalItems === 'number' ? data.totalItems : 0;
+
+        for (let i = 0; i < data.chunkCount; i++) {
+          const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+          const chunkSnap = await getDocFromServer(chunkRef).catch(() => getDoc(chunkRef));
+          if (chunkSnap.exists()) {
+            const chunkData = chunkSnap.data();
+            if (Array.isArray(chunkData?.items)) {
+              const beforeLen = chunkData.items.length;
+              const filtered = chunkData.items.filter((item: any) => {
+                const itemId = item?.id !== undefined ? String(item.id) : null;
+                return itemId !== strId;
+              });
+              if (filtered.length !== beforeLen) {
+                const diff = beforeLen - filtered.length;
+                removedCount += diff;
+                newTotal = Math.max(0, newTotal - diff);
+                await setDoc(chunkRef, { items: filtered, partIndex: i, lastUpdated: now }, { merge: true });
+              }
+            }
+          }
+        }
+
+        const rootItems = Array.isArray(data.items)
+          ? data.items.filter((item: any) => String(item?.id) !== strId)
+          : [];
+
+        await setDoc(docRef, {
+          isChunked: true,
+          chunkCount: data.chunkCount,
+          totalItems: newTotal,
+          lastUpdated: now,
+          items: rootItems
+        }, { merge: true });
+
+      } else if (Array.isArray(data?.items)) {
+        const filtered = data.items.filter((item: any) => {
+          const itemId = item?.id !== undefined ? String(item.id) : null;
+          return itemId !== strId;
+        });
+        await setDoc(docRef, {
+          items: filtered,
+          totalItems: filtered.length,
+          lastUpdated: now,
+          isChunked: false
+        });
+      }
+
+      // Update metadata timestamp
+      const metaRef = doc(db, 'appData', '_metadata');
+      setDoc(metaRef, { [collectionName]: now }, { merge: true }).catch(() => {});
+
+      // Invalidate synced hash
+      lastSyncedHashes.delete(collectionName);
+    }
+
+    // Clean individual doc if any
+    deleteDoc(doc(db, collectionName, strId)).catch(() => {});
+    deleteDoc(doc(db, 'appData', strId)).catch(() => {});
+
+    return true;
+  } catch (err) {
+    console.warn(`deleteRecordFromFirestore notice for ${collectionName}/${id}:`, err);
+    return false;
+  }
+};
+
+export const purgeDeletedRecordsFromFirestore = async (collectionName: string): Promise<number> => {
+  const deletedIds = getDeletedRecordIds(collectionName);
+  if (deletedIds.length === 0) return 0;
+  if (isQuotaExhausted) return 0;
+
+  try {
+    await ensureAuthenticated();
+    const deletedSet = new Set(deletedIds.map(String));
+    const docRef = doc(db, 'appData', collectionName);
+    const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
+    const now = new Date().toISOString();
+    let purgedCount = 0;
+
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data?.isChunked && typeof data?.chunkCount === 'number' && data.chunkCount > 0) {
+        let newTotal = typeof data.totalItems === 'number' ? data.totalItems : 0;
+        for (let i = 0; i < data.chunkCount; i++) {
+          const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+          const chunkSnap = await getDocFromServer(chunkRef).catch(() => getDoc(chunkRef));
+          if (chunkSnap.exists()) {
+            const chunkData = chunkSnap.data();
+            if (Array.isArray(chunkData?.items)) {
+              const beforeLen = chunkData.items.length;
+              const filtered = chunkData.items.filter((item: any) => !deletedSet.has(String(item?.id)));
+              if (filtered.length !== beforeLen) {
+                const diff = beforeLen - filtered.length;
+                purgedCount += diff;
+                newTotal = Math.max(0, newTotal - diff);
+                await setDoc(chunkRef, { items: filtered, partIndex: i, lastUpdated: now }, { merge: true });
+              }
+            }
+          }
+        }
+
+        const rootItems = Array.isArray(data.items)
+          ? data.items.filter((item: any) => !deletedSet.has(String(item?.id)))
+          : [];
+
+        await setDoc(docRef, {
+          isChunked: true,
+          chunkCount: data.chunkCount,
+          totalItems: newTotal,
+          lastUpdated: now,
+          items: rootItems
+        }, { merge: true });
+
+      } else if (Array.isArray(data?.items)) {
+        const beforeLen = data.items.length;
+        const filtered = data.items.filter((item: any) => !deletedSet.has(String(item?.id)));
+        purgedCount = beforeLen - filtered.length;
+        await setDoc(docRef, {
+          items: filtered,
+          totalItems: filtered.length,
+          lastUpdated: now,
+          isChunked: false
+        });
+      }
+
+      const metaRef = doc(db, 'appData', '_metadata');
+      setDoc(metaRef, { [collectionName]: now }, { merge: true }).catch(() => {});
+      lastSyncedHashes.delete(collectionName);
+    }
+
+    clearDeletedRecordIds(collectionName);
+    return purgedCount;
+  } catch (e) {
+    console.warn(`purgeDeletedRecordsFromFirestore failed for ${collectionName}:`, e);
+    return 0;
+  }
+};
+
 let isQuotaExhausted = false;
 let quotaResetTimeout: any = null;
 const quotaListeners = new Set<(exhausted: boolean) => void>();
@@ -276,6 +477,10 @@ export const saveCollectionToFirestore = async (
     const now = new Date().toISOString();
     const docRef = doc(db, 'appData', collectionName);
 
+    // Read deleted IDs queue for this collection
+    const deletedIds = getDeletedRecordIds(collectionName);
+    const deletedIdsSet = new Set(deletedIds.map(String));
+
     let finalItems = cleanItems;
 
     // Fail-safe merge: fetch existing remote collection so entries from other devices are never wiped out
@@ -303,6 +508,14 @@ export const saveCollectionToFirestore = async (
               remoteItems = remoteData.items;
             }
 
+            // Exclude any remote items that were deleted locally
+            if (deletedIdsSet.size > 0) {
+              remoteItems = remoteItems.filter(item => {
+                const itemId = item?.id !== undefined ? String(item.id) : null;
+                return !itemId || !deletedIdsSet.has(itemId);
+              });
+            }
+
             if (remoteItems.length > 0) {
               finalItems = mergeCollectionItems(cleanItems, remoteItems, 'id');
             }
@@ -310,6 +523,19 @@ export const saveCollectionToFirestore = async (
         }
       } catch (mergeErr) {
         console.warn(`Notice reading remote collection for merge before saving ${collectionName}:`, mergeErr);
+      }
+    }
+
+    // Ensure finalItems strictly excludes all deleted IDs
+    if (deletedIdsSet.size > 0) {
+      finalItems = finalItems.filter(item => {
+        const itemId = item?.id !== undefined ? String(item.id) : null;
+        return !itemId || !deletedIdsSet.has(itemId);
+      });
+      // Purge from individual Firestore documents if any
+      for (const delId of deletedIds) {
+        deleteDoc(doc(db, collectionName, delId)).catch(() => {});
+        deleteDoc(doc(db, 'appData', delId)).catch(() => {});
       }
     }
 
@@ -339,7 +565,7 @@ export const saveCollectionToFirestore = async (
         lastSyncedHashes.set(chunkKey, chunkHash);
       }
 
-      // Write root descriptor
+      // Write root descriptor with exact item count
       await setDoc(docRef, {
         isChunked: true,
         chunkCount: totalChunks,
@@ -357,6 +583,9 @@ export const saveCollectionToFirestore = async (
         totalItems: serverItems.length 
       });
     }
+
+    // Clear deleted queue on successful upload
+    clearDeletedRecordIds(collectionName);
     
     // Update metadata document asynchronously
     const metaRef = doc(db, 'appData', '_metadata');
@@ -403,11 +632,14 @@ export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> =>
     const metaSnap = await getDocFromServer(metaRef).catch(() => getDoc(metaRef));
     const metadata = metaSnap.exists() ? (metaSnap.data() as Record<string, string>) : {};
 
-    const [recSnap, tempSnap, masterSnap, checkSnap] = await Promise.all([
+    const [recSnap, tempSnap, masterSnap, checkSnap, watchSnap, vehicleSnap, dossierSnap] = await Promise.all([
       getDocFromServer(doc(db, 'appData', 'records')).catch(() => getDoc(doc(db, 'appData', 'records'))),
       getDocFromServer(doc(db, 'appData', 'tempRecords')).catch(() => getDoc(doc(db, 'appData', 'tempRecords'))),
       getDocFromServer(doc(db, 'appData', 'masterData')).catch(() => getDoc(doc(db, 'appData', 'masterData'))),
-      getDocFromServer(doc(db, 'appData', 'checkingHistory')).catch(() => getDoc(doc(db, 'appData', 'checkingHistory')))
+      getDocFromServer(doc(db, 'appData', 'checkingHistory')).catch(() => getDoc(doc(db, 'appData', 'checkingHistory'))),
+      getDocFromServer(doc(db, 'appData', 'watchList')).catch(() => getDoc(doc(db, 'appData', 'watchList'))),
+      getDocFromServer(doc(db, 'appData', 'vehicleSummaries')).catch(() => getDoc(doc(db, 'appData', 'vehicleSummaries'))),
+      getDocFromServer(doc(db, 'appData', 'dossierHistory')).catch(() => getDoc(doc(db, 'appData', 'dossierHistory')))
     ]);
 
     const getCount = (snap: any) => {
@@ -423,9 +655,9 @@ export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> =>
       recordsCount: getCount(recSnap),
       tempRecordsCount: getCount(tempSnap),
       masterDataCount: getCount(masterSnap),
-      vehicleSummariesCount: 0,
+      vehicleSummariesCount: getCount(vehicleSnap),
       checkingHistoryCount: getCount(checkSnap),
-      watchListCount: 0,
+      watchListCount: getCount(watchSnap),
       metadata,
       lastUpdated: metadata?.records || new Date().toISOString()
     };
@@ -506,10 +738,26 @@ export const fetchCollectionFromFirestore = async (collectionName: string) => {
             }
           }
         });
+        const deletedIds = getDeletedRecordIds(collectionName);
+        const deletedSet = new Set(deletedIds.map(String));
+        if (deletedSet.size > 0) {
+          return allItems.filter(item => {
+            const itemId = item?.id !== undefined ? String(item.id) : null;
+            return !itemId || !deletedSet.has(itemId);
+          });
+        }
         return allItems;
       }
 
       if (Array.isArray(data.items)) {
+        const deletedIds = getDeletedRecordIds(collectionName);
+        const deletedSet = new Set(deletedIds.map(String));
+        if (deletedSet.size > 0) {
+          return data.items.filter(item => {
+            const itemId = item?.id !== undefined ? String(item.id) : null;
+            return !itemId || !deletedSet.has(itemId);
+          });
+        }
         return data.items;
       }
     }

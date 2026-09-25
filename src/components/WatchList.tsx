@@ -37,7 +37,7 @@ import { ImmRecord, MasterItem, MovementData, Tab, WatchListPerson, WatchListRec
 import { logActivity } from '../utils/activityLogger';
 import * as XLSX from 'xlsx';
 import { miniDB } from '../db';
-import { saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, setSyncedHash } from '../lib/firebase';
+import { saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, setSyncedHash, deleteRecordFromFirestore } from '../lib/firebase';
 
 interface WatchListProps {
   records: ImmRecord[];
@@ -429,6 +429,7 @@ export const WatchList: React.FC<WatchListProps> = ({
     const targetWl = watchList.find(r => r.id === id);
     if (confirm('ဤစောင့်ကြည့်စာရင်း မှတ်တမ်းကို ဖျက်မည်မှာ သေချာပါသလား?')) {
       setWatchList(prev => prev.filter(r => r.id !== id));
+      deleteRecordFromFirestore('watchList', id);
       if (activeCheckRecord?.id === id) setActiveCheckRecord(null);
       if (activeReportRecord?.id === id) setActiveReportRecord(null);
       if (targetWl) {

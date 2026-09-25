@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps } from './lib/firebase';
+import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps, deleteRecordFromFirestore, trackDeletedRecord, getDeletedRecordIds, clearDeletedRecordIds } from './lib/firebase';
 import { 
   Link2,
   Link,
@@ -3505,6 +3505,7 @@ const MasterDB = ({
   const deleteMaster = (id: number) => {
     const targetM = masterData.find(m => m.id === id);
     setMasterData(prev => prev.filter(m => m.id !== id));
+    deleteRecordFromFirestore('masterData', id);
     if (targetM) {
       logActivity({
         action: 'DELETE',
@@ -8042,6 +8043,10 @@ export default function App() {
         setShowCloudLoginModal(false);
         setIsInitialSyncing(false);
         showToast(`မင်္ဂလာပါ ${u} (${matchedRole}) အနေဖြင့် အသုံးပြုနိုင်ပါပြီ`);
+        // Single initial pull on login
+        setTimeout(() => {
+          handleFetchDataFromCloud(false, true).catch(() => {});
+        }, 300);
       } else {
         setLoginAuthError("Username သို့မဟုတ် Password မှားယွင်းနေပါသည်။ (လုံခြုံရေးအရ ငြင်းပယ်သည်)");
       }
@@ -8472,6 +8477,12 @@ export default function App() {
       } finally {
         setIsDBCardLoaded(true);
         setIsInitialSyncing(false);
+        // Perform a single initial cloud pull on startup if logged in
+        if (localStorage.getItem('imm_pwa_cloud_auth_user')) {
+          setTimeout(() => {
+            handleFetchDataFromCloud(false, true).catch(() => {});
+          }, 600);
+        }
       }
     };
 
@@ -8482,6 +8493,10 @@ export default function App() {
   useEffect(() => {
     const unsubAuth = initAuth(() => {
       setIsCloudSynced(true);
+      // Auto pull once when auth is verified and logged in
+      if (localStorage.getItem('imm_pwa_cloud_auth_user')) {
+        handleFetchDataFromCloud(false, true).catch(() => {});
+      }
     });
 
     return () => {
@@ -10636,6 +10651,7 @@ export default function App() {
       const target = records.find(r => r.id === id);
       setRecords(prev => prev.filter(r => r.id !== id));
       setConfirmDeleteId(null);
+      deleteRecordFromFirestore('records', id);
       if (target) {
         logActivity({
           action: 'DELETE',
@@ -10656,8 +10672,12 @@ export default function App() {
       }
       if (selectedIds.length === 0) return;
       const count = selectedIds.length;
+      const idsToDelete = [...selectedIds];
       setRecords(prev => prev.filter(r => !selectedIds.includes(r.id)));
       setSelectedIds([]);
+      idsToDelete.forEach(id => {
+        deleteRecordFromFirestore('records', id);
+      });
       logActivity({
         action: 'DELETE',
         module: 'FFE',
