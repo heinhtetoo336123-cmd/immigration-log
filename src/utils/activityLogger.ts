@@ -168,11 +168,6 @@ export async function logActivity(params: {
     window.dispatchEvent(new CustomEvent('imm_activity_logged', { detail: newEntry }));
   }
 
-  // Asynchronously sync new activity log entry to Cloud Firestore across all users
-  saveCollectionToFirestore('activityLogs', updatedLogs, true).catch(err => {
-    console.warn("Async Cloud save activity log failed (safely stored locally):", err);
-  });
-
   return newEntry;
 }
 
@@ -181,7 +176,6 @@ export async function clearActivityLogs(): Promise<void> {
   try {
     await miniDB.remove(ACTIVITY_LOGS_KEY);
     localStorage.removeItem(ACTIVITY_LOGS_KEY);
-    await saveCollectionToFirestore('activityLogs', [], true);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('imm_activity_logged', { detail: null }));
     }

@@ -3738,18 +3738,24 @@ const MasterDB = ({
     if (setRecords) {
       setRecords(prev => {
         const updatedRecs = prev.map(updateRecordFn);
-        localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
+        try {
+          if (updatedRecs.length > 500) {
+            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs.slice(0, 500)));
+          } else {
+            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
+          }
+        } catch (e) {}
         miniDB.set('records', updatedRecs).catch(() => {});
-        saveCollectionToFirestore('records', updatedRecs).catch(() => {});
         return updatedRecs;
       });
     }
     if (setTempRecords) {
       setTempRecords(prev => {
         const updatedTemps = prev.map(updateRecordFn);
-        localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps));
+        try {
+          localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps.slice(0, 500)));
+        } catch (e) {}
         miniDB.set('tempRecords', updatedTemps).catch(() => {});
-        saveCollectionToFirestore('tempRecords', updatedTemps).catch(() => {});
         return updatedTemps;
       });
     }
@@ -3763,13 +3769,14 @@ const MasterDB = ({
           linkedValue: targetLinked,
           updatedAt: new Date().toISOString()
         } : m);
-      localStorage.setItem('imm_master_react', JSON.stringify(mergedList));
+      try {
+        localStorage.setItem('imm_master_react', JSON.stringify(mergedList));
+      } catch (e) {}
       miniDB.set('masterData', mergedList).catch(() => {});
-      saveCollectionToFirestore('masterData', mergedList, true).catch(() => {});
       return mergedList;
     });
 
-    showToast(`MERGED DUPLICATES INTO "${targetName}" SUCCESSFULLY (SYNCED TO CLOUD)`);
+    showToast(`MERGED DUPLICATES INTO "${targetName}" SUCCESSFULLY`);
   };
 
   const handleMergeAllClusters = () => {
@@ -3868,18 +3875,24 @@ const MasterDB = ({
     if (setRecords) {
       setRecords(prev => {
         const updatedRecs = prev.map(updateRecordBatchFn);
-        localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
+        try {
+          if (updatedRecs.length > 500) {
+            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs.slice(0, 500)));
+          } else {
+            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
+          }
+        } catch (e) {}
         miniDB.set('records', updatedRecs).catch(() => {});
-        saveCollectionToFirestore('records', updatedRecs).catch(() => {});
         return updatedRecs;
       });
     }
     if (setTempRecords) {
       setTempRecords(prev => {
         const updatedTemps = prev.map(updateRecordBatchFn);
-        localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps));
+        try {
+          localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps.slice(0, 500)));
+        } catch (e) {}
         miniDB.set('tempRecords', updatedTemps).catch(() => {});
-        saveCollectionToFirestore('tempRecords', updatedTemps).catch(() => {});
         return updatedTemps;
       });
     }
@@ -3904,14 +3917,15 @@ const MasterDB = ({
           }
           return m;
         });
-      localStorage.setItem('imm_master_react', JSON.stringify(mergedList));
+      try {
+        localStorage.setItem('imm_master_react', JSON.stringify(mergedList));
+      } catch (e) {}
       miniDB.set('masterData', mergedList).catch(() => {});
-      saveCollectionToFirestore('masterData', mergedList, true).catch(() => {});
       return mergedList;
     });
 
     setShowMergeModal(false);
-    showToast(`MERGED ALL ${duplicateClusters.length} GROUPS SUCCESSFULLY (SYNCED TO CLOUD)`);
+    showToast(`MERGED ALL ${duplicateClusters.length} GROUPS SUCCESSFULLY`);
   };
 
   // Dedicated Auto-Sync: Scans recent records to sync & refresh all master data with latest matched values
@@ -7637,21 +7651,6 @@ export default function App() {
       await saveDeviceSession(newSession);
     };
 
-    // Hourly Heartbeat Timer Effect (1 Hour Interval = 3,600,000ms to minimize Cloud Read/Write Quota)
-    useEffect(() => {
-      if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
-
-      sendHeartbeatPing(cloudAuthUser);
-
-      // Heartbeat ping every 1 Hour (3,600,000 ms)
-      const ONE_HOUR_MS = 60 * 60 * 1000;
-      const heartbeatInterval = setInterval(() => {
-        sendHeartbeatPing();
-      }, ONE_HOUR_MS);
-
-      return () => clearInterval(heartbeatInterval);
-    }, [cloudAuthUser?.deviceId, cloudAuthUser?.username]);
-
     // Font Scaling & UI Zoom state (11 granular scaling levels)
     const [fontScale, setFontScale] = useState<string>(() => {
       return localStorage.getItem('imm_pwa_font_scale') || '100';
@@ -7937,30 +7936,6 @@ export default function App() {
       }
     };
 
-    // 25-Second Periodic Background Smart Poll & Window Focus Sync (Auto-receives updates from other devices/phones)
-    useEffect(() => {
-      if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
-
-      const backgroundSyncInterval = setInterval(() => {
-        if (isOnline && document.visibilityState === 'visible' && !isRemoteSyncingRef.current && !isAutoSyncing) {
-          handleFetchDataFromCloud(false, true).catch(() => {});
-        }
-      }, 25000);
-
-      const handleFocus = () => {
-        if (isOnline && !isRemoteSyncingRef.current && !isAutoSyncing) {
-          handleFetchDataFromCloud(false, true).catch(() => {});
-        }
-      };
-
-      window.addEventListener('focus', handleFocus);
-
-      return () => {
-        clearInterval(backgroundSyncInterval);
-        window.removeEventListener('focus', handleFocus);
-      };
-    }, [cloudAuthUser, isOnline, isAutoSyncing]);
-
     // Startup Launch Sequence: Check if Cloud Auth exists
     useEffect(() => {
       const savedCloud = localStorage.getItem('imm_pwa_cloud_auth_user');
@@ -8065,18 +8040,8 @@ export default function App() {
         setLoginUsernameInput('');
         setLoginPasswordInput('');
         setShowCloudLoginModal(false);
-        setIsInitialSyncing(true);
+        setIsInitialSyncing(false);
         showToast(`မင်္ဂလာပါ ${u} (${matchedRole}) အနေဖြင့် အသုံးပြုနိုင်ပါပြီ`);
-
-        // Perform Initial Cloud Sync for the new device
-        handleFetchDataFromCloud(true)
-          .then(() => {
-            showToast("Cloud မှ ဒေတာများ အောင်မြင်စွာ Sync လုပ်ပြီးပါပြီ");
-          })
-          .catch(err => console.warn("Background cloud check on login:", err))
-          .finally(() => {
-            setIsInitialSyncing(false);
-          });
       } else {
         setLoginAuthError("Username သို့မဟုတ် Password မှားယွင်းနေပါသည်။ (လုံခြုံရေးအရ ငြင်းပယ်သည်)");
       }
@@ -8507,9 +8472,6 @@ export default function App() {
       } finally {
         setIsDBCardLoaded(true);
         setIsInitialSyncing(false);
-        if (localStorage.getItem('imm_pwa_cloud_auth_user')) {
-          setTimeout(() => handleFetchDataFromCloud().catch(() => {}), 300);
-        }
       }
     };
 
@@ -11568,28 +11530,52 @@ export default function App() {
           if (p.records && Array.isArray(p.records)) {
             const restoredRecords = p.records.map((r: any) => ({
               ...r,
-              syncStatus: 'pending_sync',
+              syncStatus: r.syncStatus || 'synced',
               updatedAt: r.updatedAt || new Date().toISOString()
             }));
             setRecords(restoredRecords);
             await miniDB.set('records', restoredRecords);
+            setSyncedHash('records', restoredRecords);
+            try {
+              if (restoredRecords.length > 500) {
+                localStorage.setItem('imm_records_react', JSON.stringify(restoredRecords.slice(0, 500)));
+              } else {
+                localStorage.setItem('imm_records_react', JSON.stringify(restoredRecords));
+              }
+            } catch (err) {}
           }
           if (p.tempRecords && Array.isArray(p.tempRecords)) {
             const restoredTemp = p.tempRecords.map((r: any) => ({
               ...r,
-              syncStatus: 'pending_sync',
+              syncStatus: r.syncStatus || 'synced',
               updatedAt: r.updatedAt || new Date().toISOString()
             }));
             setTempRecords(restoredTemp);
             await miniDB.set('tempRecords', restoredTemp);
+            setSyncedHash('tempRecords', restoredTemp);
+            try {
+              if (restoredTemp.length > 500) {
+                localStorage.setItem('imm_temp_records_react', JSON.stringify(restoredTemp.slice(0, 500)));
+              } else {
+                localStorage.setItem('imm_temp_records_react', JSON.stringify(restoredTemp));
+              }
+            } catch (err) {}
           }
           if (p.masterData && Array.isArray(p.masterData)) {
             setMasterData(p.masterData);
             await miniDB.set('masterData', p.masterData);
+            setSyncedHash('masterData', p.masterData);
+            try {
+              localStorage.setItem('imm_master_react', JSON.stringify(p.masterData));
+            } catch (err) {}
           }
           if (p.vehicleSummaries && Array.isArray(p.vehicleSummaries)) {
             setVehicleSummaries(p.vehicleSummaries);
             await miniDB.set('vehicleSummaries', p.vehicleSummaries);
+            setSyncedHash('vehicleSummaries', p.vehicleSummaries);
+            try {
+              localStorage.setItem('imm_vehicle_summaries', JSON.stringify(p.vehicleSummaries));
+            } catch (err) {}
           }
           if (p.dailyPdfs && typeof p.dailyPdfs === 'object') {
             setDailyPdfs(p.dailyPdfs);
@@ -11602,14 +11588,23 @@ export default function App() {
             }));
             setCheckingHistory(ch);
             await miniDB.set('checkingHistory', ch);
+            setSyncedHash('checkingHistory', ch);
+            try {
+              localStorage.setItem('checking_verification_history_logs_v1', JSON.stringify(ch));
+            } catch (err) {}
           }
           if (p.dossierHistory && Array.isArray(p.dossierHistory)) {
             setDossierHistory(p.dossierHistory);
             await miniDB.set('dossierHistory', p.dossierHistory);
+            setSyncedHash('dossierHistory', p.dossierHistory);
+            try {
+              localStorage.setItem('imm_dossier_history_react', JSON.stringify(p.dossierHistory));
+            } catch (err) {}
           }
           if (p.watchList && Array.isArray(p.watchList)) {
             setWatchList(p.watchList);
             await miniDB.set('watchList', p.watchList);
+            setSyncedHash('watchList', p.watchList);
             try {
               localStorage.setItem('imm_watchlist_records_v1', JSON.stringify(p.watchList));
             } catch (e) {}
@@ -11622,11 +11617,11 @@ export default function App() {
             module: 'SYSTEM',
             officerName: cloudAuthUser?.username,
             officerRole: cloudAuthUser?.role || 'Editor',
-            details: `Restored Full System from JSON Backup file`
+            details: `Restored Full System from JSON Backup file (${(p.records || []).length} records)`
           });
-          showToast("COMBINED SYSTEM RESTORED SUCCESSFULLY!");
+          showToast(`✓ စနစ်မှတ်တမ်းများ ပြန်လည်တင်သွင်းပြီးပါပြီ (${(p.records || []).length} Records Restored Successfully)`);
         } else {
-          showToast("INVALID COMBINED BACKUP STRUCTURE");
+          showToast("⚠️ Backup ဖိုင် တည်ဆောက်ပုံ မမှန်ကန်ပါ");
         }
       } catch (err) { 
         alert("Invalid Combined Backup File Structure"); 

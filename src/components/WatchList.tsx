@@ -189,32 +189,6 @@ export const WatchList: React.FC<WatchListProps> = ({
   const watchList = parentWatchList !== undefined ? parentWatchList : localWatchList;
   const setWatchList = parentSetWatchList || setLocalWatchList;
 
-  // Real-time Cloud synchronization listener for cross-device updates
-  useEffect(() => {
-    const unsub = subscribeToFirestoreCollection('watchList', (items) => {
-      if (Array.isArray(items)) {
-        setWatchList((currentList: WatchListRecord[]) => {
-          const map = new Map<string, WatchListRecord>();
-          (currentList || []).forEach(item => { if (item && item.id) map.set(item.id, item); });
-          items.forEach((item: WatchListRecord) => { if (item && item.id) map.set(item.id, item); });
-          const merged = Array.from(map.values()).sort((a, b) => {
-            const timeA = new Date(a.createdAt || a.letterDate || 0).getTime();
-            const timeB = new Date(b.createdAt || b.letterDate || 0).getTime();
-            return timeB - timeA;
-          });
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-            miniDB.set('watchList', merged).catch(() => {});
-          } catch (e) {}
-          return merged;
-        });
-      }
-    });
-    return () => {
-      if (unsub) unsub();
-    };
-  }, [setWatchList]);
-
   // Secondary hydration from IndexedDB if local is empty
   useEffect(() => {
     if (watchList.length === 0) {

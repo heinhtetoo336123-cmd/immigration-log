@@ -1,25 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Cloud, 
-  CloudCheck, 
-  RefreshCw, 
-  Smartphone, 
-  Laptop, 
-  Tablet, 
-  CheckCircle2, 
-  AlertCircle, 
-  Clock, 
-  Database, 
+  Server, 
   UploadCloud, 
   DownloadCloud, 
   X, 
-  Wifi, 
-  WifiOff, 
-  ShieldCheck, 
-  ArrowUpRight,
-  Server
+  CheckCircle2, 
+  AlertCircle, 
+  Clock, 
+  Laptop, 
+  Smartphone, 
+  Tablet, 
+  RefreshCw 
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { CloudStats, fetchCloudCollectionStats } from '../lib/firebase';
 import { ImmRecord } from '../types';
 
@@ -51,28 +44,24 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
   isOpen,
   onClose,
   isOnline,
-  isAutoSyncing,
   isCloudSynced,
   lastSyncTime,
   isQuotaExhausted,
   cloudAuthUser,
   deviceSessions,
   records,
-  masterDataCount,
-  tempRecordsCount,
-  checkingHistoryCount,
   onManualSync,
   onFetchFromCloud,
   onResetQuota
 }) => {
-  const [activeTab, setActiveTab] = useState<'status' | 'pending' | 'devices'>('status');
+  const [activeTab, setActiveTab] = useState<'overview' | 'pending' | 'devices'>('overview');
   const [cloudStats, setCloudStats] = useState<CloudStats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [isSyncingAction, setIsSyncingAction] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  // Compute pending vs synced records
   const pendingRecords = records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed');
-  const syncedRecordsCount = records.length - pendingRecords.length;
+  const syncedCount = records.length - pendingRecords.length;
 
   const loadStats = async () => {
     if (!isOnline) return;
@@ -90,26 +79,35 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       loadStats();
+      setStatusMessage(null);
     }
   }, [isOpen, isOnline]);
 
-  const handleTriggerUpload = async () => {
-    if (isSyncingAction) return;
+  const handleUploadAll = async () => {
+    if (isSyncingAction || !isOnline) return;
     setIsSyncingAction(true);
+    setStatusMessage("Uploading collections to server...");
     try {
       await onManualSync();
       await loadStats();
+      setStatusMessage("✓ Upload completed successfully.");
+    } catch (err: any) {
+      setStatusMessage(`Upload failed: ${err?.message || 'Server error'}`);
     } finally {
       setIsSyncingAction(false);
     }
   };
 
-  const handleTriggerDownload = async () => {
-    if (isSyncingAction) return;
+  const handlePullLatest = async () => {
+    if (isSyncingAction || !isOnline) return;
     setIsSyncingAction(true);
+    setStatusMessage("Fetching latest data from server...");
     try {
       await onFetchFromCloud(true);
       await loadStats();
+      setStatusMessage("✓ Download completed successfully.");
+    } catch (err: any) {
+      setStatusMessage(`Download failed: ${err?.message || 'Server error'}`);
     } finally {
       setIsSyncingAction(false);
     }
@@ -118,291 +116,206 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
   const getDeviceIcon = (devName?: string) => {
     const n = (devName || '').toLowerCase();
     if (n.includes('phone') || n.includes('iphone') || n.includes('android') || n.includes('mobile')) {
-      return <Smartphone size={16} className="text-emerald-400" />;
+      return <Smartphone size={14} className="text-slate-400" />;
     }
     if (n.includes('pad') || n.includes('tablet')) {
-      return <Tablet size={16} className="text-cyan-400" />;
+      return <Tablet size={14} className="text-slate-400" />;
     }
-    return <Laptop size={16} className="text-indigo-400" />;
+    return <Laptop size={14} className="text-slate-400" />;
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 10 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 10 }}
-        className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-slate-100"
+        initial={{ opacity: 0, scale: 0.97 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.97 }}
+        className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col shadow-xl overflow-hidden text-slate-200"
       >
-        {/* Header */}
-        <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-400 shadow-inner">
-              <Server size={20} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-black uppercase tracking-tight text-white">
-                  Cloud Server & Sync Monitor
-                </h3>
-                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
-                  isOnline 
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
-                    : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                }`}>
-                  {isOnline ? 'Online' : 'Offline'}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 font-medium">
-                ဆာဗာဒေတာနှင့် အခြားစက်များ (ဖုန်း/ကွန်ပျူတာ) အချက်အလက် စစ်ဆေးမှု စနစ်
-              </p>
-            </div>
+        {/* Minimalist Header */}
+        <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Server size={18} className="text-slate-400" />
+            <h3 className="text-sm font-bold uppercase tracking-wide text-white">
+              Cloud Server & Sync Monitor
+            </h3>
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+              isOnline 
+                ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60' 
+                : 'bg-rose-950/60 text-rose-400 border-rose-800/60'
+            }`}>
+              {isOnline ? 'Online' : 'Offline'}
+            </span>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+            className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
           >
             <X size={16} />
           </button>
         </div>
 
-        {/* Tab Selection */}
-        <div className="flex border-b border-slate-800 bg-slate-900/60 p-1.5 gap-1.5 text-xs font-bold">
-          <button
-            onClick={() => setActiveTab('status')}
-            className={`flex-1 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === 'status'
-                ? 'bg-indigo-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Cloud size={14} />
-            <span>ဆာဗာ ချိတ်ဆက်မှု (Sync Status)</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('pending')}
-            className={`flex-1 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === 'pending'
-                ? 'bg-indigo-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Clock size={14} />
-            <span>မရောက်သေးသော ဒေတာ ({pendingRecords.length})</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('devices')}
-            className={`flex-1 py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              activeTab === 'devices'
-                ? 'bg-indigo-600 text-white shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-            }`}
-          >
-            <Smartphone size={14} />
-            <span>ချိတ်ဆက်ထားသော စက်များ ({deviceSessions.length})</span>
-          </button>
+        {/* Minimalist Tab Bar */}
+        <div className="flex border-b border-slate-800 bg-slate-900/80 px-4 pt-2 gap-2 text-xs font-semibold">
+          {[
+            { id: 'overview', label: 'Overview' },
+            { id: 'pending', label: `Pending (${pendingRecords.length})` },
+            { id: 'devices', label: `Devices (${deviceSessions.length})` }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`pb-2 px-3 border-b-2 transition-all cursor-pointer ${
+                activeTab === tab.id
+                  ? 'border-indigo-500 text-white font-bold'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
-        {/* Body Content */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
-          {activeTab === 'status' && (
+        {/* Content Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+          {activeTab === 'overview' && (
             <div className="space-y-4">
-              {/* Highlight Status Card */}
-              <div className={`p-4 rounded-2xl border ${
-                pendingRecords.length === 0
-                  ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-100'
-                  : 'bg-amber-950/20 border-amber-500/30 text-amber-100'
-              }`}>
-                <div className="flex items-start gap-3">
-                  <div className={`p-2 rounded-xl mt-0.5 ${
-                    pendingRecords.length === 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
-                  }`}>
-                    {pendingRecords.length === 0 ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="font-black text-sm uppercase">
-                      {pendingRecords.length === 0
-                        ? '✓ စာရင်းများအားလုံး ဆာဗာပေါ်သို့ ရောက်ရှိသိမ်းဆည်းပြီးပါပြီ'
-                        : `⚠️ ဆာဗာသို့ မရောက်သေးသော ဒေတာ (${pendingRecords.length}) ခု ရှိနေပါသည်`}
-                    </h4>
-                    <p className="text-[11px] text-slate-300 mt-1">
-                      {pendingRecords.length === 0
-                        ? `လက်ရှိစက်ရှိ မှတ်တမ်း (${records.length}) ခုစလုံးသည် Google Cloud Server ပေါ်တွင် လုံခြုံစွာ သိမ်းဆည်းပြီးဖြစ်၍ အခြားစက်များမှလည်း တိုက်ရိုက် ကြည့်ရှုနိုင်ပါသည်။`
-                        : 'အင်တာနက်လိုင်း ချို့ယွင်းမှု သို့မဟုတ် မပို့ရသေးသော စာရင်းများ ရှိနေပါသည်။ အောက်ပါ "Upload All Pending" ခလုတ်ကို နှိပ်၍ ဆာဗာသို့ ချက်ချင်း ပို့ဆောင်နိုင်ပါသည်။'}
-                    </p>
-                    <div className="flex items-center gap-2 mt-2 text-[10px] text-slate-400 font-mono">
-                      <span>နောက်ဆုံး Sync အချိန်:</span>
-                      <span className="font-bold text-indigo-300">{lastSyncTime || 'မပြုလုပ်ရသေးပါ'}</span>
-                    </div>
+              {/* Stat Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Local Records</span>
+                  <div className="text-lg font-bold text-white font-mono mt-0.5">{records.length}</div>
+                </div>
+                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Synced</span>
+                  <div className="text-lg font-bold text-emerald-400 font-mono mt-0.5">{syncedCount}</div>
+                </div>
+                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Pending</span>
+                  <div className={`text-lg font-bold font-mono mt-0.5 ${pendingRecords.length > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                    {pendingRecords.length}
                   </div>
                 </div>
-              </div>
-
-              {/* Data Counters Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                <div className="bg-slate-800/70 border border-slate-700/60 p-3 rounded-2xl">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Local Recs</span>
-                  <div className="text-xl font-black text-white mt-1 font-mono">{records.length}</div>
-                  <span className="text-[9px] text-indigo-300 font-semibold">ဤစက်ရှိ စာရင်းစုစုပေါင်း</span>
-                </div>
-                <div className="bg-slate-800/70 border border-slate-700/60 p-3 rounded-2xl">
-                  <span className="text-[10px] font-bold text-emerald-400 uppercase block">Server Synced</span>
-                  <div className="text-xl font-black text-emerald-400 mt-1 font-mono">{syncedRecordsCount}</div>
-                  <span className="text-[9px] text-emerald-300/80 font-semibold">ဆာဗာပေါ် ရောက်ပြီး</span>
-                </div>
-                <div className="bg-slate-800/70 border border-slate-700/60 p-3 rounded-2xl">
-                  <span className="text-[10px] font-bold text-amber-400 uppercase block">Pending Upload</span>
-                  <div className="text-xl font-black text-amber-400 mt-1 font-mono">{pendingRecords.length}</div>
-                  <span className="text-[9px] text-amber-300/80 font-semibold">ဆာဗာ မရောက်သေး</span>
-                </div>
-                <div className="bg-slate-800/70 border border-slate-700/60 p-3 rounded-2xl">
-                  <span className="text-[10px] font-bold text-cyan-400 uppercase block">Cloud Server Recs</span>
-                  <div className="text-xl font-black text-cyan-400 mt-1 font-mono">
+                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
+                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Cloud Server</span>
+                  <div className="text-lg font-bold text-slate-200 font-mono mt-0.5">
                     {isLoadingStats ? '...' : (cloudStats?.recordsCount ?? '-')}
                   </div>
-                  <span className="text-[9px] text-cyan-300/80 font-semibold">ဆာဗာရှိ စုစုပေါင်း</span>
                 </div>
               </div>
 
-              {/* Unified Sync Actions */}
-              <div className="bg-slate-800/50 border border-slate-700/70 rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-black text-xs uppercase text-slate-200 flex items-center gap-1.5">
-                    <Database size={14} className="text-indigo-400" />
-                    Unified Cloud Synchronization (ဒေတာအားလုံး တပြိုင်နက် ချိတ်ဆက်ခြင်း)
-                  </span>
-                  <button
-                    onClick={loadStats}
-                    disabled={isLoadingStats}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
-                  >
-                    <RefreshCw size={10} className={isLoadingStats ? "animate-spin" : ""} /> Check Cloud
-                  </button>
+              {/* Status Message or Quota Alert */}
+              {isQuotaExhausted && (
+                <div className="p-3 bg-rose-950/30 border border-rose-800/50 rounded-xl text-rose-300 flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle size={14} className="shrink-0 text-rose-400" />
+                    <span>Quota Limit Reached. Data is safely stored in local IndexedDB.</span>
+                  </div>
+                  {onResetQuota && (
+                    <button 
+                      onClick={onResetQuota}
+                      className="px-2 py-1 bg-rose-900/60 hover:bg-rose-800 text-white rounded text-[10px] font-bold"
+                    >
+                      Reset
+                    </button>
+                  )}
                 </div>
-                <p className="text-[11px] text-slate-400">
-                  ဤနေရာမှတစ်ဆင့် Flight/Foreigner Entries (FFE)၊ Master Data၊ Checkpoint နှင့် History စာရင်းအားလုံးကို Google Cloud Server နှင့် တပြိုင်နက် Upload/Download Sync ပြုလုပ်နိုင်ပါသည်။
-                </p>
+              )}
 
-                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              {statusMessage && (
+                <div className="p-2.5 bg-slate-800/60 border border-slate-700/60 rounded-xl text-slate-300 text-[11px]">
+                  {statusMessage}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="space-y-2 pt-1">
+                <div className="flex flex-col sm:flex-row gap-2.5">
                   <button
-                    onClick={handleTriggerUpload}
+                    onClick={handleUploadAll}
                     disabled={isSyncingAction || !isOnline}
-                    className={`flex-1 py-2.5 px-4 rounded-xl font-black uppercase text-xs flex items-center justify-center gap-2 shadow-lg transition-all ${
+                    className={`flex-1 py-2.5 px-4 rounded-xl font-bold uppercase text-xs flex items-center justify-center gap-2 transition-all ${
                       !isOnline
-                        ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-800'
                         : isSyncingAction
                         ? 'bg-indigo-700 text-white cursor-wait'
-                        : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-indigo-900/30'
+                        : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-xs'
                     }`}
                   >
-                    <UploadCloud size={16} className={isSyncingAction ? "animate-bounce" : ""} />
-                    <span>{isSyncingAction ? "Uploading to Server..." : "Upload All to Cloud Server (ဆာဗာသို့ ပို့မည်)"}</span>
+                    <UploadCloud size={15} />
+                    <span>{isSyncingAction ? "Processing..." : "UPLOAD ALL TO CLOUD SERVER"}</span>
                   </button>
 
                   <button
-                    onClick={handleTriggerDownload}
+                    onClick={handlePullLatest}
                     disabled={isSyncingAction || !isOnline}
-                    className={`flex-1 py-2.5 px-4 rounded-xl font-black uppercase text-xs flex items-center justify-center gap-2 border transition-all ${
+                    className={`flex-1 py-2.5 px-4 rounded-xl font-bold uppercase text-xs flex items-center justify-center gap-2 border transition-all ${
                       !isOnline
-                        ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed'
-                        : 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border-slate-700 hover:border-cyan-500/40 cursor-pointer'
+                        ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 cursor-pointer'
                     }`}
                   >
-                    <DownloadCloud size={16} />
-                    <span>Pull Latest from Server (ဆာဗာမှ ဒေတာ ရယူမည်)</span>
+                    <DownloadCloud size={15} />
+                    <span>PULL LATEST FROM SERVER</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+                  <span>Last Sync: {lastSyncTime || 'None'}</span>
+                  <button
+                    onClick={loadStats}
+                    disabled={isLoadingStats || !isOnline}
+                    className="hover:text-slate-300 flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw size={11} className={isLoadingStats ? "animate-spin" : ""} /> Check Cloud Info
                   </button>
                 </div>
               </div>
 
-              {/* Current Device Info */}
-              <div className="bg-slate-800/40 border border-slate-700/50 p-3 rounded-2xl flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-300">
-                    {getDeviceIcon(cloudAuthUser?.deviceName)}
-                  </div>
-                  <div>
-                    <div className="font-bold text-white flex items-center gap-1.5">
-                      <span>{cloudAuthUser?.deviceName || 'This Device'}</span>
-                      <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.2 rounded border border-indigo-400/30 font-bold">
-                        {cloudAuthUser?.role || 'Editor'}
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      User: {cloudAuthUser?.username || 'OFFICER'} • ID: {cloudAuthUser?.deviceId?.substring(0, 14) || 'local'}...
-                    </span>
-                  </div>
+              {/* Current Device Summary */}
+              <div className="border-t border-slate-800/80 pt-3 flex items-center justify-between text-[11px] text-slate-400">
+                <div className="flex items-center gap-2">
+                  {getDeviceIcon(cloudAuthUser?.deviceName)}
+                  <span>{cloudAuthUser?.deviceName || 'Local Duty Terminal'}</span>
+                  <span className="text-[10px] bg-slate-800 px-1.5 py-0.2 rounded font-mono text-slate-300">
+                    {cloudAuthUser?.role || 'Editor'}
+                  </span>
                 </div>
-                <div className="text-right">
-                  <span className="text-[10px] text-emerald-400 font-bold block">● Connected</span>
-                  <span className="text-[9px] text-slate-400">Active Duty</span>
-                </div>
+                <span className="font-mono text-slate-500">{cloudAuthUser?.username || 'OFFICER'}</span>
               </div>
             </div>
           )}
 
           {activeTab === 'pending' && (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-black text-xs uppercase text-slate-200">
-                    ဆာဗာသို့ မရောက်ရှိသေးသော ဒေတာများ (Pending Upload Records)
-                  </h4>
-                  <p className="text-[11px] text-slate-400">
-                    ဤစာရင်းများသည် ဖုန်း/စက်ထဲတွင်သာ ရှိနေပြီး Server သို့ မရောက်သေးသော စာရင်းများဖြစ်ပါသည်
-                  </p>
-                </div>
-                {pendingRecords.length > 0 && (
-                  <button
-                    onClick={handleTriggerUpload}
-                    disabled={isSyncingAction || !isOnline}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[11px] px-3 py-1.5 rounded-xl uppercase flex items-center gap-1 cursor-pointer shadow-md"
-                  >
-                    <UploadCloud size={13} /> Upload All Now
-                  </button>
-                )}
-              </div>
-
               {pendingRecords.length === 0 ? (
-                <div className="p-8 text-center bg-slate-800/30 border border-slate-700/50 rounded-2xl space-y-2">
-                  <CheckCircle2 size={32} className="mx-auto text-emerald-400" />
-                  <div className="font-black text-sm text-slate-200">မရောက်သေးသော စာရင်း လုံးဝမရှိပါ</div>
-                  <p className="text-slate-400 text-xs">
-                    မှတ်တမ်းအားလုံးသည် Cloud Server ပေါ်သို့ ၁၀၀% အောင်မြင်စွာ ရောက်ရှိပြီး ဖြစ်ပါသည်။
-                  </p>
+                <div className="py-8 text-center text-slate-500 space-y-1.5">
+                  <CheckCircle2 size={24} className="mx-auto text-emerald-500/60" />
+                  <div className="text-xs font-semibold text-slate-400">No pending records</div>
+                  <div className="text-[11px]">All records are in sync with cloud storage.</div>
                 </div>
               ) : (
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
                   {pendingRecords.map((r, idx) => (
                     <div
                       key={r.id || idx}
-                      className="bg-slate-800/80 border border-slate-700/80 p-3 rounded-2xl flex items-center justify-between gap-3"
+                      className="bg-slate-800/40 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between text-xs"
                     >
-                      <div className="min-w-0">
+                      <div>
                         <div className="flex items-center gap-2">
-                          <span className="font-mono font-black text-xs text-indigo-300">{r.passport}</span>
-                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
-                            r.mode === 'IN' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-orange-500/20 text-orange-300'
-                          }`}>
-                            {r.mode}
-                          </span>
-                          <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.2 rounded font-bold flex items-center gap-1">
-                            <Clock size={8} /> Local Only
-                          </span>
+                          <span className="font-mono font-bold text-indigo-300">{r.passport}</span>
+                          <span className="text-[10px] text-slate-400">[{r.mode}]</span>
+                          <span className="text-[10px] text-slate-300 font-semibold">{r.fullname}</span>
                         </div>
-                        <div className="text-xs font-bold text-white truncate mt-0.5">{r.fullname}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          {r.timestamp} • {r.nationality || '-'} • Flight/Vehicle: {r.vehicleInfo || '-'}
+                        <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                          {r.timestamp} • {r.nationality || '-'}
                         </div>
                       </div>
-                      <button
-                        onClick={handleTriggerUpload}
-                        disabled={isSyncingAction}
-                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[10px] font-black uppercase shrink-0 flex items-center gap-1 cursor-pointer"
-                      >
-                        <UploadCloud size={10} /> Sync
-                      </button>
+                      <span className="text-[10px] text-amber-400 font-semibold px-2 py-0.5 bg-amber-950/40 rounded border border-amber-800/40">
+                        Pending
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -411,87 +324,55 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
           )}
 
           {activeTab === 'devices' && (
-            <div className="space-y-3">
-              <div>
-                <h4 className="font-black text-xs uppercase text-slate-200">
-                  ချိတ်ဆက်အသုံးပြုနေသော စက်များ (Connected Devices)
-                </h4>
-                <p className="text-[11px] text-slate-400">
-                  ဆာဗာသို့ ချိတ်ဆက်ထားသော အခြားစက်များ (ဖုန်း၊ တက်ဘလက်၊ ကွန်ပျူတာ) ၏ နောက်ဆုံး လှုပ်ရှားမှု အခြေအနေ
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                {deviceSessions.map((session, idx) => {
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {deviceSessions.length === 0 ? (
+                <div className="py-8 text-center text-slate-500 text-xs">
+                  No other active device sessions recorded.
+                </div>
+              ) : (
+                deviceSessions.map((session, idx) => {
                   const isCurrent = session.deviceId === cloudAuthUser?.deviceId;
-                  const isRecentlyActive = session.lastPingTimestamp && (Date.now() - session.lastPingTimestamp < 2 * 60 * 60 * 1000);
-
                   return (
                     <div
                       key={session.deviceId || idx}
-                      className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
+                      className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
                         isCurrent 
-                          ? 'bg-indigo-950/30 border-indigo-500/40' 
-                          : 'bg-slate-800/60 border-slate-700/60'
+                          ? 'bg-indigo-950/20 border-indigo-800/50' 
+                          : 'bg-slate-800/30 border-slate-800'
                       }`}
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="p-2 rounded-xl bg-slate-700/60 shrink-0">
-                          {getDeviceIcon(session.deviceName)}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-black text-white text-xs truncate">
-                              {session.deviceName || 'Device'}
-                            </span>
+                      <div className="flex items-center gap-2.5">
+                        {getDeviceIcon(session.deviceName)}
+                        <div>
+                          <div className="font-semibold text-slate-200 flex items-center gap-1.5">
+                            <span>{session.deviceName || 'Device'}</span>
                             {isCurrent && (
-                              <span className="bg-indigo-500 text-white text-[8px] px-1.5 py-0.2 rounded font-black uppercase">
-                                This Device
+                              <span className="text-[9px] bg-indigo-500/30 text-indigo-300 px-1 rounded font-bold">
+                                Current
                               </span>
                             )}
-                            <span className="text-[9px] bg-slate-700 text-slate-300 px-1.5 py-0.2 rounded font-bold">
-                              {session.accountRole || 'Editor'}
-                            </span>
                           </div>
-                          <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
-                            User: {session.username || 'OFFICER'} • Last Active: {session.lastActive || 'Just now'}
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {session.username || 'User'} • {session.accountRole || 'Editor'}
                           </div>
                         </div>
                       </div>
-
-                      <div className="text-right shrink-0">
-                        {isRecentlyActive ? (
-                          <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1 justify-end">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                            Online
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-slate-400 font-bold flex items-center gap-1 justify-end">
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                            Idle
-                          </span>
-                        )}
-                        <span className="text-[9px] text-slate-500 font-mono block">
-                          ID: {session.deviceId ? session.deviceId.substring(0, 10) : 'dev'}...
-                        </span>
+                      <div className="text-right text-[10px] text-slate-500">
+                        {session.lastActive || 'Active'}
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                })
+              )}
             </div>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="p-3.5 sm:p-4 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2 text-slate-400 text-[11px]">
-            <ShieldCheck size={14} className="text-indigo-400" />
-            <span>Google Firebase Enterprise Encrypted Sync</span>
-          </div>
+        {/* Minimalist Footer */}
+        <div className="px-5 py-3 border-t border-slate-800 flex justify-end">
           <button
             onClick={onClose}
-            className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-xl font-black uppercase text-[11px] transition-colors cursor-pointer"
+            className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold transition-colors"
           >
             Close
           </button>

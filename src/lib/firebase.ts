@@ -8,16 +8,22 @@ import {
   onSnapshot, 
   collection, 
   getDocs,
-  writeBatch,
   deleteDoc
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
-import config from '../../firebase-applet-config.json';
 
-export const app = initializeApp(config);
+// 2. SWITCH FIREBASE PROJECT TO `immi-log-sys`
+export const firebaseConfig = {
+  apiKey: "AIzaSyCnl9z3CNPYksrzHXvmR7O4YJbb_mCAk9M",
+  authDomain: "immi-log-sys.firebaseapp.com",
+  projectId: "immi-log-sys",
+  storageBucket: "immi-log-sys.firebasestorage.app",
+  messagingSenderId: "224760074381",
+  appId: "1:224760074381:web:9ab094f68317d9a03492c4"
+};
 
-const databaseId = config.firestoreDatabaseId || '(default)';
-export const db = getFirestore(app, databaseId);
+export const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app);
 export const auth = getAuth(app);
 
 // Initialize anonymous auth automatically if enabled, fallback gracefully if restricted
@@ -54,7 +60,7 @@ export const ensureAuthenticated = (): Promise<User | null> => {
   });
 };
 
-// Sync helpers for main collections & app state
+// Sync tracking hashes for collections to avoid redundant writes
 const lastSyncedHashes = new Map<string, string>();
 
 export const setSyncedHash = (collectionName: string, items: any[]) => {
@@ -216,7 +222,6 @@ export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[
       const k = getItemKey(item);
       if (k) {
         if (!map.has(k)) {
-          // Item on server is confirmed synced
           map.set(k, { ...item, syncStatus: 'synced' });
         } else {
           const localItem = map.get(k)!;
@@ -241,12 +246,19 @@ export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[
   return Array.from(map.values());
 };
 
+const CHUNK_SIZE = 500; // 500 items per chunk guarantees payload well under 250KB (Firestore doc limit is 1MB)
+
+/**
+ * STRICT MANUAL/EXPLICIT WRITE ONLY:
+ * Writes to Firestore (setDoc, updateDoc, addDoc) execute ONLY when called by an explicit action button.
+ * Chunking protects against Firestore's 1MB limit for large datasets (~45,800 records).
+ */
 export const saveCollectionToFirestore = async (
   collectionName: string, 
   items: any[], 
   force: boolean = false,
   mergeWithRemote: boolean = true
-) => {
+): Promise<boolean> => {
   if (isQuotaExhausted) {
     triggerWriteErrorAlert(collectionName, "Write Quota Limit Reached");
     return false;
@@ -255,7 +267,7 @@ export const saveCollectionToFirestore = async (
   try {
     await ensureAuthenticated();
     const currentJson = JSON.stringify(items || []);
-    // STRICT check: if data has NOT changed and not forcing, return true
+    // STRICT check: if data has NOT changed and not forcing, return true without calling Firestore
     if (!force && lastSyncedHashes.get(collectionName) === currentJson) {
       return true;
     }
@@ -266,14 +278,34 @@ export const saveCollectionToFirestore = async (
 
     let finalItems = cleanItems;
 
-    // Fail-safe merge: fetch existing remote collection so entries from other devices (e.g. Phone or PC) are NEVER wiped out
+    // Fail-safe merge: fetch existing remote collection so entries from other devices are never wiped out
     if (mergeWithRemote) {
       try {
         const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
         if (snap.exists()) {
           const remoteData = snap.data();
-          if (remoteData && Array.isArray(remoteData.items) && remoteData.items.length > 0) {
-            finalItems = mergeCollectionItems(cleanItems, remoteData.items, 'id');
+          if (remoteData) {
+            let remoteItems: any[] = [];
+            if (remoteData.isChunked && typeof remoteData.chunkCount === 'number') {
+              // Read chunk parts
+              const chunkPromises = [];
+              for (let i = 0; i < remoteData.chunkCount; i++) {
+                const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+                chunkPromises.push(getDocFromServer(chunkRef).catch(() => getDoc(chunkRef)));
+              }
+              const chunkSnaps = await Promise.all(chunkPromises);
+              chunkSnaps.forEach(cs => {
+                if (cs.exists() && Array.isArray(cs.data()?.items)) {
+                  remoteItems.push(...cs.data()!.items);
+                }
+              });
+            } else if (Array.isArray(remoteData.items)) {
+              remoteItems = remoteData.items;
+            }
+
+            if (remoteItems.length > 0) {
+              finalItems = mergeCollectionItems(cleanItems, remoteItems, 'id');
+            }
           }
         }
       } catch (mergeErr) {
@@ -288,7 +320,43 @@ export const saveCollectionToFirestore = async (
       serverSyncedAt: item.serverSyncedAt || now
     }));
 
-    await setDoc(docRef, { items: serverItems, lastUpdated: now });
+    // Check if dataset is large and requires chunking to prevent exceeding Firestore's 1MB document size limit
+    if (serverItems.length > CHUNK_SIZE) {
+      const totalChunks = Math.ceil(serverItems.length / CHUNK_SIZE);
+
+      // Write only chunks that actually changed
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkItems = serverItems.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkHash = JSON.stringify(chunkItems);
+        const chunkKey = `${collectionName}_part_${i}`;
+
+        if (!force && lastSyncedHashes.get(chunkKey) === chunkHash) {
+          continue; // Skip writing unchanged chunk to save write quota
+        }
+
+        const chunkRef = doc(db, 'appData', chunkKey);
+        await setDoc(chunkRef, { items: chunkItems, partIndex: i, lastUpdated: now });
+        lastSyncedHashes.set(chunkKey, chunkHash);
+      }
+
+      // Write root descriptor
+      await setDoc(docRef, {
+        isChunked: true,
+        chunkCount: totalChunks,
+        totalItems: serverItems.length,
+        lastUpdated: now,
+        // Keep a compact preview of latest records in the root doc for fast reads
+        items: serverItems.slice(0, 200)
+      });
+    } else {
+      // Small/standard collection fits easily in single document
+      await setDoc(docRef, { 
+        items: serverItems, 
+        lastUpdated: now, 
+        isChunked: false, 
+        totalItems: serverItems.length 
+      });
+    }
     
     // Update metadata document asynchronously
     const metaRef = doc(db, 'appData', '_metadata');
@@ -342,7 +410,14 @@ export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> =>
       getDocFromServer(doc(db, 'appData', 'checkingHistory')).catch(() => getDoc(doc(db, 'appData', 'checkingHistory')))
     ]);
 
-    const getCount = (snap: any) => (snap.exists() && Array.isArray(snap.data()?.items) ? snap.data().items.length : 0);
+    const getCount = (snap: any) => {
+      if (!snap.exists()) return 0;
+      const data = snap.data();
+      if (!data) return 0;
+      if (typeof data.totalItems === 'number') return data.totalItems;
+      if (Array.isArray(data.items)) return data.items.length;
+      return 0;
+    };
 
     return {
       recordsCount: getCount(recSnap),
@@ -375,7 +450,6 @@ export const subscribeToFirestoreCollection = (
         const data = snapshot.data();
         if (data && Array.isArray(data.items)) {
           const jsonStr = JSON.stringify(data.items);
-          // STRICT ECHO PREVENTION: Skip calling onUpdate if local synced hash matches remote snapshot
           if (lastSyncedHashes.get(collectionName) === jsonStr) {
             return;
           }
@@ -409,10 +483,33 @@ export const fetchCollectionFromFirestore = async (collectionName: string) => {
     const snapshot = await getDocFromServer(docRef).catch(() => getDoc(docRef));
     if (snapshot.exists()) {
       const data = snapshot.data();
-      if (data && Array.isArray(data.items)) {
-        if (data.lastUpdated) {
-          setLocalTimestamp(collectionName, data.lastUpdated);
+      if (!data) return null;
+
+      if (data.lastUpdated) {
+        setLocalTimestamp(collectionName, data.lastUpdated);
+      }
+
+      // Handle chunked collections (e.g. records with ~45,800 items)
+      if (data.isChunked && typeof data.chunkCount === 'number' && data.chunkCount > 0) {
+        const chunkPromises = [];
+        for (let i = 0; i < data.chunkCount; i++) {
+          const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+          chunkPromises.push(getDocFromServer(chunkRef).catch(() => getDoc(chunkRef)));
         }
+        const chunkSnaps = await Promise.all(chunkPromises);
+        const allItems: any[] = [];
+        chunkSnaps.forEach(cs => {
+          if (cs.exists()) {
+            const cData = cs.data();
+            if (cData && Array.isArray(cData.items)) {
+              allItems.push(...cData.items);
+            }
+          }
+        });
+        return allItems;
+      }
+
+      if (Array.isArray(data.items)) {
         return data.items;
       }
     }
@@ -429,8 +526,7 @@ export const fetchCollectionFromFirestore = async (collectionName: string) => {
 };
 
 /**
- * Smart fetch: Fetches collections directly from Firestore and downloads items
- * if hash differs or remote timestamp is updated or forceAll is set to true.
+ * Smart fetch: Fetches collections directly from Firestore when manually triggered by the user
  */
 export const checkAndFetchUpdatedCollections = async (
   collectionNames: string[],
@@ -457,17 +553,14 @@ export const checkAndFetchUpdatedCollections = async (
       const localTime = localTimestamps[col];
       const localHash = getSyncedHash(col);
 
-      // Check if remote is newer from metadata
       const isRemoteNewerByMeta = remoteTime && (!localTime || new Date(remoteTime).getTime() > new Date(localTime).getTime());
 
-      // If forceAll OR remote is newer by metadata OR localHash is missing/not set, fetch collection directly
       if (forceAll || isRemoteNewerByMeta || !localHash) {
         const items = await fetchCollectionFromFirestore(col);
         if (Array.isArray(items)) {
           results[col] = items;
         }
       } else {
-        // Fallback check: fetch document directly to ensure no metadata desync
         const items = await fetchCollectionFromFirestore(col);
         if (Array.isArray(items)) {
           const remoteHash = JSON.stringify(items);
@@ -485,6 +578,7 @@ export const checkAndFetchUpdatedCollections = async (
   return results;
 };
 
+// Device Session methods (used only on explicit user actions such as login or admin kick/role update)
 export const saveDeviceSession = async (session: any) => {
   if (isQuotaExhausted) return false;
   try {
@@ -597,4 +691,3 @@ export const subscribeToDeviceSessions = (onUpdate: (sessions: any[]) => void) =
     if (unsubscribeSnapshot) unsubscribeSnapshot();
   };
 };
-
