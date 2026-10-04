@@ -250,11 +250,22 @@ const getLiveRemainingDays = (toDateStr: string): string => {
 
 export const formatToDDMMYYYY = (dateStr: string | undefined | null): string => {
   if (!dateStr || dateStr === 'N/A' || dateStr === '-') return '';
-  const trimmed = String(dateStr).trim();
-  if (!trimmed) return '';
+  let trimmed = String(dateStr).trim().replace(/[,;\s]+$/, '').trim();
+  if (!trimmed || trimmed === 'N/A' || trimmed === '-') return '';
+
+  // 0. Remove timestamps / commas like "2026-10-04, 12:00:00" or "04-10-2026,"
+  if (trimmed.includes(',')) {
+    trimmed = trimmed.split(',')[0].trim();
+  }
+  if (trimmed.includes('T')) {
+    trimmed = trimmed.split('T')[0].trim();
+  }
+  if (trimmed.includes(' ') && !/^\d{1,2}\s+[a-zA-Z]+\s+\d{4}$/.test(trimmed)) {
+    trimmed = trimmed.split(' ')[0].trim();
+  }
 
   // 1. Detect standard ISO/Autofill date format: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
-  const ymdMatch = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:T.*)?$/);
+  const ymdMatch = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
   if (ymdMatch) {
     const [, y, m, d] = ymdMatch;
     return `${d.padStart(2, '0')}-${m.padStart(2, '0')}-${y}`;
@@ -268,8 +279,9 @@ export const formatToDDMMYYYY = (dateStr: string | undefined | null): string => 
   }
 
   // 3. Fallback for Date strings
-  const d = new Date(trimmed);
-  if (!isNaN(d.getTime())) {
+  const parsed = Date.parse(trimmed);
+  if (!isNaN(parsed)) {
+    const d = new Date(parsed);
     const day = String(d.getUTCDate()).padStart(2, '0');
     const month = String(d.getUTCMonth() + 1).padStart(2, '0');
     const year = d.getUTCFullYear();
@@ -277,6 +289,21 @@ export const formatToDDMMYYYY = (dateStr: string | undefined | null): string => 
   }
 
   return trimmed;
+};
+
+export const normalizeStandardDate = (dateStr: string | undefined | null): string => {
+  const formatted = formatToDDMMYYYY(dateStr);
+  if (formatted) return formatted;
+  if (!dateStr || dateStr === 'N/A' || dateStr === '-') return '-';
+  return String(dateStr).trim().replace(/[,;\s]+$/, '').trim() || '-';
+};
+
+export const formatVisaValidityPeriod = (stayFrom?: string, stayTo?: string, useBurmeseDigits: boolean = false): string => {
+  const f = normalizeStandardDate(stayFrom);
+  const t = normalizeStandardDate(stayTo);
+  if (f === '-' && t === '-') return '-';
+  const rangeStr = `${f !== '-' ? f : ''} မှ ${t !== '-' ? t : ''}`.trim();
+  return useBurmeseDigits ? toBurmeseDigits(rangeStr) : rangeStr;
 };
 
 const formatDateToDDMMYYYY = (dateStr: string) => {
@@ -6330,10 +6357,28 @@ export default function App() {
 
     const [activeTab, setActiveTab] = useState<Tab>('entry');
     const [language, setLanguage] = useState<'ENG' | 'BUR'>('ENG');
-    const [records, setRecords] = useState<ImmRecord[]>([]);
-    const [tempRecords, setTempRecords] = useState<ImmRecord[]>([]);
+    const [records, setRecords] = useState<ImmRecord[]>(() => {
+      try {
+        const saved = localStorage.getItem('imm_records_react');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return [];
+    });
+    const [tempRecords, setTempRecords] = useState<ImmRecord[]>(() => {
+      try {
+        const saved = localStorage.getItem('imm_temp_records_react');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return [];
+    });
     const [preFilledTempId, setPreFilledTempId] = useState<number | null>(null);
-    const [masterData, setMasterData] = useState<MasterItem[]>([]);
+    const [masterData, setMasterData] = useState<MasterItem[]>(() => {
+      try {
+        const saved = localStorage.getItem('imm_master_react');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return [];
+    });
     const [currentMode, setCurrentMode] = useState<Mode>('IN');
     const [toast, setToast] = useState({ message: '', visible: false });
     const [editTarget, setEditTarget] = useState<ImmRecord | null>(null);
@@ -6345,7 +6390,13 @@ export default function App() {
     const [movementSearchQuery, setMovementSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<number[]>([]);
     const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-    const [vehicleSummaries, setVehicleSummaries] = useState<VehicleSummary[]>([]);
+    const [vehicleSummaries, setVehicleSummaries] = useState<VehicleSummary[]>(() => {
+      try {
+        const saved = localStorage.getItem('imm_vehicle_summaries');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return [];
+    });
     const [passportSearchResults, setPassportSearchResults] = useState<ImmRecord[]>([]);
     const [nameSearchResults, setNameSearchResults] = useState<ImmRecord[]>([]);
     const [ffeConfirmation, setFfeConfirmation] = useState<{ show: boolean, message: string } | null>(null);
@@ -6444,8 +6495,20 @@ export default function App() {
     const prevLocalHashesRef = useRef<Record<string, string>>({});
 
     const [dailyPdfs, setDailyPdfs] = useState<Record<string, { base64: string; name: string }>>({});
-    const [dossierHistory, setDossierHistory] = useState<DossierRecord[]>([]);
-    const [watchList, setWatchList] = useState<WatchListRecord[]>([]);
+    const [dossierHistory, setDossierHistory] = useState<DossierRecord[]>(() => {
+      try {
+        const saved = localStorage.getItem('imm_dossier_history_react');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return [];
+    });
+    const [watchList, setWatchList] = useState<WatchListRecord[]>(() => {
+      try {
+        const saved = localStorage.getItem('imm_watchlist_records_v1');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+      return [];
+    });
 
     const [activePrintPreview, setActivePrintPreview] = useState<{
       title: string;
@@ -7345,8 +7408,51 @@ export default function App() {
 
       let nextRecordsList: ImmRecord[] = [];
       if (editTarget) {
-        nextRecordsList = records.map(r => r.id === editTarget.id ? recordToSave : r);
+        const targetPassport = (recordToSave.passport || '').toUpperCase().trim();
+        nextRecordsList = records.map(r => {
+          if (r.id === editTarget.id) {
+            return recordToSave;
+          }
+          // Cascade updated personal info to all records sharing the exact same passport number
+          if (targetPassport && r.passport && r.passport.toUpperCase().trim() === targetPassport) {
+            return {
+              ...r,
+              fullname: recordToSave.fullname || r.fullname,
+              nationality: recordToSave.nationality || r.nationality,
+              gender: recordToSave.gender || r.gender,
+              dob: recordToSave.dob || r.dob,
+              address: recordToSave.address || r.address,
+              stayDescription: recordToSave.stayDescription || r.stayDescription,
+              previousPassport: recordToSave.previousPassport || r.previousPassport,
+              dualPassportRemarks: recordToSave.dualPassportRemarks || r.dualPassportRemarks,
+              syncStatus: 'pending_sync',
+              updatedAt: new Date().toISOString()
+            };
+          }
+          return r;
+        });
         setRecords(nextRecordsList);
+
+        // Also cascade to tempRecords
+        setTempRecords(prev => prev.map(tr => {
+          if (targetPassport && tr.passport && tr.passport.toUpperCase().trim() === targetPassport) {
+            return {
+              ...tr,
+              fullname: recordToSave.fullname || tr.fullname,
+              nationality: recordToSave.nationality || tr.nationality,
+              gender: recordToSave.gender || tr.gender,
+              dob: recordToSave.dob || tr.dob,
+              address: recordToSave.address || tr.address,
+              stayDescription: recordToSave.stayDescription || tr.stayDescription,
+              previousPassport: recordToSave.previousPassport || tr.previousPassport,
+              dualPassportRemarks: recordToSave.dualPassportRemarks || tr.dualPassportRemarks,
+              syncStatus: 'pending_sync',
+              updatedAt: new Date().toISOString()
+            };
+          }
+          return tr;
+        }));
+
         setEditTarget(null);
         logActivity({
           action: 'UPDATE',
@@ -7354,7 +7460,7 @@ export default function App() {
           officerName: recordToSave.officialName || (recordToSave.officialTitle && recordToSave.officialName ? `${recordToSave.officialTitle} ${recordToSave.officialName}` : cloudAuthUser?.username),
           officerRole: cloudAuthUser?.role || 'Editor',
           targetId: recordToSave.passport,
-          details: `Updated ${recordToSave.logType || 'FFE'} [${recordToSave.mode}] record #${recordToSave.id} for Passport ${recordToSave.passport} (${recordToSave.fullname || 'N/A'}, ${recordToSave.nationality || 'N/A'}) - Flight/Vehicle: ${recordToSave.vehicleInfo || '-'}`
+          details: `Updated ${recordToSave.logType || 'FFE'} [${recordToSave.mode}] record #${recordToSave.id} for Passport ${recordToSave.passport} (${recordToSave.fullname || 'N/A'}, ${recordToSave.nationality || 'N/A'}) [Cascaded personal info to matching records] - Flight/Vehicle: ${recordToSave.vehicleInfo || '-'}`
         });
       } else {
         nextRecordsList = [recordToSave, ...records];
@@ -8502,41 +8608,6 @@ export default function App() {
                 className="input-field bg-slate-100 border-slate-300 text-slate-500 font-medium cursor-not-allowed select-none" 
                 placeholder="Auto-populated detail stay description..." 
               />
-            </div>
-
-            <div className="p-3.5 bg-indigo-50/50 rounded-xl border border-indigo-200/60 mt-2 space-y-3 animate-in fade-in duration-300">
-              <div>
-                <label className="input-label font-black text-indigo-900 text-[10px] uppercase tracking-wider flex items-center gap-1">
-                  ခွင့်ပြုချက် အခြေအနေ (Permit Status)
-                </label>
-                <select 
-                  value={normalizePermitStatus(formData.stillPermittedStatus) || ''} 
-                  onChange={(e) => setFormData(prev => ({ 
-                    ...prev, 
-                    stillPermittedStatus: (e.target.value as PermitStatus) || ''
-                  }))} 
-                  className="input-field bg-white border-indigo-300 text-xs font-black text-indigo-900"
-                >
-                  <option value="">-- အခြေအနေ ရွေးချယ်ရန် --</option>
-                  <option value="နေထိုင်ခွင့်ကျထားသောသူ">🟢 နေထိုင်ခွင့်ကျထားသောသူ</option>
-                  <option value="နေထိုင်ခွင့် မလျှောက်ထားသေးသူ">🟠 နေထိုင်ခွင့် မလျှောက်ထားသေးသူ</option>
-                </select>
-              </div>
-              {(formData.stillPermittedStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' || formData.stillPermittedStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ' || formData.stillPermittedStatus === 'STAY PERMITTED' || formData.stillPermittedStatus === 'STAY NOT PERMITTED') && (
-                <div className="animate-in slide-in-from-top-1 duration-200">
-                  <label className="input-label font-black text-indigo-900 text-[10px] uppercase tracking-wider">
-                    {normalizePermitStatus(formData.stillPermittedStatus) === 'နေထိုင်ခွင့်ကျထားသောသူ' ? '📝 ခွင့်ပြုသူ / အကြောင်းအရာ (Permitted By / Description)' : '📝 အကြောင်းပြချက် / မှတ်ချက် (Reason / Remarks)'}
-                  </label>
-                  <input 
-                    type="text" 
-                    list="permitDescriptionList"
-                    value={formData.permittedBy || ''} 
-                    onChange={(e) => setFormData(prev => ({ ...prev, permittedBy: e.target.value }))} 
-                    className="input-field bg-white border-indigo-300 font-bold text-xs" 
-                    placeholder={normalizePermitStatus(formData.stillPermittedStatus) === 'နေထိုင်ခွင့်ကျထားသောသူ' ? "ခွင့်ပြုသူ အမည် သို့မဟုတ် နေထိုင်ခွင့်အကြောင်းအရာ..." : "ခွင့်မပြုသေးသည့် အကြောင်းပြချက် သို့မဟုတ် မှတ်ချက်..."} 
-                  />
-                </div>
-              )}
             </div>
           </div>
 
@@ -10138,20 +10209,6 @@ export default function App() {
                                <span className="font-bold text-slate-900 block leading-none">{r.officialTitle || 'Officer'}</span>
                                <span className="text-[10px] text-purple-700 font-bold block mt-0.5">Officer Name: {r.officialName || '-'}</span>
                              </div>
-                             {r.stillPermittedStatus && (
-                               <div className="md:col-span-2 lg:col-span-3 bg-indigo-50/40 p-3 rounded-xl border border-indigo-100 flex items-center justify-between">
-                                  <div>
-                                    <span className="text-[9px] font-black text-indigo-900 block uppercase tracking-wider">🟢 Dynamic Permit Status (ခွင့်ပြုချက် အခြေအနေ)</span>
-                                    <span className="text-sm font-black text-indigo-950 uppercase">{r.stillPermittedStatus}</span>
-                                  </div>
-                                  {(r.stillPermittedStatus === 'STAY PERMITTED' || r.stillPermittedStatus === 'STILL PERMITTED') && r.permittedBy && (
-                                    <div className="text-right">
-                                      <span className="text-[9px] font-black text-indigo-900 block uppercase tracking-wider">📝 Permitted By (ခွင့်ပြုသူ)</span>
-                                      <span className="font-black text-slate-800 uppercase">{r.permittedBy}</span>
-                                    </div>
-                                  )}
-                               </div>
-                             )}
                           </div>
 
                           {r.remarks && (
@@ -11598,9 +11655,9 @@ export default function App() {
       </div>
     )}
 
-    {/* Initial Startup & Data Loading Waiting Screen (Both Offline and Online Modes) */}
+    {/* Initial Startup & Data Loading Waiting Screen (Only on initial cold boot before local cache is loaded) */}
     <AnimatePresence>
-      {(!isDBCardLoaded || isInitialSyncing) && (
+      {(!isDBCardLoaded && records.length === 0) && (
         <motion.div
           initial={{ opacity: 1 }}
           exit={{ opacity: 0 }}

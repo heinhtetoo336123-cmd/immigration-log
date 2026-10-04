@@ -3,16 +3,17 @@ import {
   FileSpreadsheet, Printer, RotateCcw, 
   Search, CheckSquare, Square, ArrowUpDown, ArrowUp, ArrowDown,
   Edit3, Check, Shield, Columns, Minimize2, Maximize2,
-  Building2, FileDown, Loader2
+  Building2, FileDown, Loader2, Share2, ChevronDown, ChevronUp,
+  Filter, X, SlidersHorizontal
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 import { ImmRecord, MovementData, MasterItem, CRTColumnId } from '../types';
 import { CRT_COLUMNS_DEFINITION, ALL_COLUMN_IDS } from '../utils/crtPresets';
 import { CustomReportColumnModal } from './CustomReportColumnModal';
 import { logActivity } from '../utils/activityLogger';
-import { formatToDDMMYYYY } from '../App';
+import { formatToDDMMYYYY, normalizeStandardDate } from '../App';
 
 interface CustomReportTableProps {
   records: ImmRecord[];
@@ -105,6 +106,7 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
 
   // Direct On-Screen Filter States
   const [dataPool, setDataPool] = useState<'STILL_IN' | 'ALL_MOVEMENTS' | 'INBOUND' | 'OUTBOUND'>('STILL_IN');
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterNationality, setFilterNationality] = useState<string>('ALL');
   const [filterVisaType, setFilterVisaType] = useState<string>('ALL');
@@ -148,7 +150,6 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
   const [selectedPassports, setSelectedPassports] = useState<Record<string, boolean>>({});
   const [manualRowOrder, setManualRowOrder] = useState<string[]>([]);
   const [customRemarks, setCustomRemarks] = useState<Record<string, string>>({});
-  const [isExportingPDF, setIsExportingPDF] = useState<boolean>(false);
 
   // Column Visibility
   const [visibleColumns, setVisibleColumns] = useState<CRTColumnId[]>(() => {
@@ -162,6 +163,24 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
     return [...ALL_COLUMN_IDS];
   });
   const [isColumnModalOpen, setIsColumnModalOpen] = useState<boolean>(false);
+
+  // Collapsible Sections States (Default Collapsed for Executive Dashboard)
+  const [isFilterExpanded, setIsFilterExpanded] = useState<boolean>(false);
+  const [isChecklistExpanded, setIsChecklistExpanded] = useState<boolean>(false);
+
+  // Active Advanced Filters Count Badge
+  const activeAdvancedFilterCount = useMemo(() => {
+    let count = 0;
+    if (filterNationality !== 'ALL') count++;
+    if (filterVisaType !== 'ALL') count++;
+    if (filterAddress !== 'ALL') count++;
+    if (filterGender !== 'ALL') count++;
+    if (filterAddressType !== 'ALL') count++;
+    if (excludeVisaS) count++;
+    if (minElapsedDays) count++;
+    if (startDate || endDate) count++;
+    return count;
+  }, [filterNationality, filterVisaType, filterAddress, filterGender, filterAddressType, excludeVisaS, minElapsedDays, startDate, endDate]);
 
   const handleToggleColumn = (colId: CRTColumnId) => {
     setVisibleColumns(prev => {
@@ -636,37 +655,139 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
     showToast("EXCEL ဖိုင် ဒေါင်းလုဒ်ရယူပြီးပါပြီ");
   };
 
-  // Direct High-Fidelity A4 Landscape PDF Export (Pyidaungsu Font 100% Compatible)
-  const exportDirectPDF = async () => {
-    if (!printRef.current) return;
-    if (displayRows.length === 0) {
-      showToast("PDF ထုတ်ယူရန် စာရင်းမရှိပါ");
-      return;
-    }
+  // Fast & Robust PDF Blob Generator (100% Isolated inside a Detached Hidden Iframe)
+  const generatePDFBlob = async (): Promise<{ blob: Blob; fileName: string } | null> => {
+    const selectedReportDate = normalizeStandardDate(selectedDate);
+    const fileName = `လက်ရှိ_ဟိုတယ်နေနိုင်ငံခြားသားစာရင်း_${selectedReportDate}.pdf`;
 
-    setIsExportingPDF(true);
-    showToast("A4 Landscape PDF ပြင်ဆင်နေပါသည်...");
+    const formattedDate = useBurmeseDigits ? toBurmeseDigits(normalizeStandardDate(selectedDate)) : normalizeStandardDate(selectedDate);
+    const columnsHtml = visibleColumns.map(colId => {
+      const col = CRT_COLUMNS_DEFINITION.find(c => c.id === colId);
+      return `<th style="border: 1px solid #000000; padding: 6px 4px; font-weight: normal; font-size: 11px; background-color: #f8fafc; font-family: 'Pyidaungsu', Myanmar3, sans-serif; text-align: center; color: #000000;">${col?.label || ''}</th>`;
+    }).join('');
 
-    // Store original styles to restore in finally block
-    const styleTags = Array.from(document.querySelectorAll('style'));
-    const originalStyles = styleTags.map(tag => ({ tag, html: tag.innerHTML }));
+    const rowsHtml = displayRows.map((r, idx) => {
+      const sr = useBurmeseDigits ? toBurmeseDigits(idx + 1) : (idx + 1);
+      const elapsed = useBurmeseDigits ? toBurmeseDigits(r.elapsedDays) : r.elapsedDays;
+      const gender = r.gender === 'M' ? 'ကျား' : r.gender === 'F' ? 'မ' : '-';
+      const visaPeriod = (r.stayFrom || r.stayTo) ? `${normalizeStandardDate(r.stayFrom)} မှ ${normalizeStandardDate(r.stayTo)}` : '-';
+      const arrivalDate = r.lastArrivalDate ? (useBurmeseDigits ? toBurmeseDigits(normalizeStandardDate(r.lastArrivalDate)) : normalizeStandardDate(r.lastArrivalDate)) : '-';
 
-    // Temporarily replace oklch(...) colors inside styles to prevent html2canvas crashes
-    styleTags.forEach(tag => {
-      if (tag.innerHTML.includes('oklch')) {
-        tag.innerHTML = tag.innerHTML.replace(/oklch\([^)]+\)/g, 'rgb(75, 85, 99)');
-      }
-    });
+      let cells = '';
+      if (visibleColumns.includes('sr')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${sr}</td>`;
+      if (visibleColumns.includes('passport')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-family: monospace; font-size: 11px; color: #000000;">${r.passport}</td>`;
+      if (visibleColumns.includes('nationality')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${r.nationality}</td>`;
+      if (visibleColumns.includes('fullname')) cells += `<td style="border: 1px solid #000000; padding: 5px 4px; text-align: left; font-size: 11px; color: #000000;">${r.fullname}</td>`;
+      if (visibleColumns.includes('gender')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${gender}</td>`;
+      if (visibleColumns.includes('visaType')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${r.visaType}</td>`;
+      if (visibleColumns.includes('stayPeriod')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${visaPeriod}</td>`;
+      if (visibleColumns.includes('arrivalDate')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${arrivalDate}</td>`;
+      if (visibleColumns.includes('elapsedDays')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: center; font-size: 11px; color: #000000;">${elapsed}</td>`;
+      if (visibleColumns.includes('address')) cells += `<td style="border: 1px solid #000000; padding: 5px 4px; text-align: left; font-size: 11px; color: #000000;">${r.address}</td>`;
+      if (visibleColumns.includes('remarks')) cells += `<td style="border: 1px solid #000000; padding: 5px 3px; text-align: left; font-size: 10px; color: #000000;">${r.remarks || ''}</td>`;
+
+      return `<tr>${cells}</tr>`;
+    }).join('');
+
+    const signerHtml = showSigner ? `
+      <div style="display: flex; justify-content: flex-end; margin-top: 30px; padding-right: 25px;">
+        <div style="text-align: center; min-width: 240px; font-family: 'Pyidaungsu', Myanmar3, sans-serif;">
+          <div style="height: 30px;"></div>
+          <div style="font-size: 12px; font-weight: normal; color: #000000;">(${officerTitle})</div>
+          <div style="font-size: 12px; font-weight: normal; color: #000000; margin-top: 3px;">${officerName}</div>
+        </div>
+      </div>
+    ` : '';
+
+    // Create an isolated off-screen hidden iframe - NEVER modify document.body styles or main DOM!
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.left = '-9999px';
+    iframe.style.top = '0';
+    iframe.style.width = '1122px';
+    iframe.style.height = '1600px';
+    iframe.style.opacity = '0';
+    iframe.style.pointerEvents = 'none';
+    iframe.style.border = '0';
+    iframe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(iframe);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 250));
-
-      const pageElements = printRef.current.querySelectorAll('.crt-pdf-page');
-      if (!pageElements || pageElements.length === 0) {
-        showToast("⚠️ PDF စာမျက်နှာ ရှာမတွေ့ပါ");
-        setIsExportingPDF(false);
-        return;
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!doc) {
+        throw new Error('Unable to access iframe document for PDF generation');
       }
+
+      doc.open();
+      doc.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              @font-face {
+                font-family: 'Pyidaungsu';
+                src: local('Pyidaungsu'), local('Myanmar3'), local('Padauk');
+              }
+              * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+              }
+              body {
+                background-color: #ffffff;
+                color: #000000;
+                font-family: 'Pyidaungsu', Myanmar3, sans-serif;
+                font-size: 11px;
+                padding: 30px 40px;
+                width: 1122px;
+              }
+              .title-text {
+                font-size: 15px;
+                font-weight: normal;
+                margin-bottom: 3px;
+                text-align: center;
+                color: #000000;
+              }
+              .date-text {
+                font-size: 11px;
+                font-weight: normal;
+                margin-bottom: 8px;
+                text-align: right;
+                color: #000000;
+              }
+              table {
+                width: 100%;
+                border-collapse: collapse;
+                background-color: #ffffff;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="title-text">${tableTitle}</div>
+            <div class="date-text">ရက်စွဲ၊ ${formattedDate}</div>
+            <table>
+              <thead>
+                <tr>${columnsHtml}</tr>
+              </thead>
+              <tbody>
+                ${rowsHtml}
+              </tbody>
+            </table>
+            ${signerHtml}
+          </body>
+        </html>
+      `);
+      doc.close();
+
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const canvas = await html2canvas(doc.body, {
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff'
+      });
 
       const pdf = new jsPDF({
         orientation: 'landscape',
@@ -675,73 +796,278 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
         compress: true
       });
 
-      for (let i = 0; i < pageElements.length; i++) {
-        const pageEl = pageElements[i] as HTMLElement;
+      const imgWidth = 297; // A4 landscape width in mm
+      const pageHeight = 210; // A4 landscape height in mm
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 0;
 
-        // Render each exact A4 page element with high resolution
-        const canvas = await html2canvas(pageEl, {
-          scale: 2.2, // Crisp 300dpi-equivalent resolution
-          useCORS: true,
-          logging: false,
-          backgroundColor: '#ffffff',
-          windowWidth: 1200
-        });
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+      heightLeft -= pageHeight;
 
-        const imgData = canvas.toDataURL('image/jpeg', 0.98);
-
-        if (i > 0) {
-          pdf.addPage('a4', 'landscape');
-        }
-
-        // Exact A4 landscape placement: 297mm x 210mm
-        pdf.addImage(imgData, 'JPEG', 0, 0, 297, 210, undefined, 'FAST');
+      while (heightLeft > 0) {
+        position -= pageHeight;
+        pdf.addPage('a4', 'landscape');
+        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+        heightLeft -= pageHeight;
       }
 
-      const safeTitle = (tableTitle || 'Custom_Report').replace(/[^a-zA-Z0-9_\u1000-\u109F]/g, '_');
-      pdf.save(`${safeTitle}_${selectedDate}.pdf`);
-
-      logActivity({
-        action: 'SETTINGS_CHANGE',
-        module: 'CRT',
-        targetId: 'Custom_Report_PDF',
-        details: `Downloaded Direct A4 Landscape PDF (${displayRows.length} rows, ${pageElements.length} pages)`
-      });
-
-      showToast("A4 LANDSCAPE PDF ဒေါင်းလုဒ် ရယူပြီးပါပြီ");
-    } catch (e) {
-      console.error("PDF Export Error:", e);
-      showToast("⚠️ PDF ထုတ်ယူရာတွင် ချို့ယွင်းချက်ရှိပါသည်");
+      const pdfBlob = pdf.output('blob');
+      return { blob: pdfBlob, fileName };
     } finally {
-      originalStyles.forEach(({ tag, html }) => {
-        tag.innerHTML = html;
-      });
-      setIsExportingPDF(false);
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
     }
   };
 
-  // Browser Print
-  const triggerPrint = () => {
-    window.print();
+  // Share Real PDF File directly to Viber / Telegram with 5-Second Hard Timeout Protection
+  const handleShareViber = async () => {
+    if (displayRows.length === 0) {
+      showToast("မျှဝေရန် စာရင်းမရှိပါ");
+      return;
+    }
+
+    setIsGeneratingPDF(true);
+    showToast("Viber သို့ ပေးပို့ရန် PDF ဖိုင် ပြင်ဆင်နေပါသည်...");
+
+    try {
+      // 5-second hard timeout protection
+      const timeoutPromise = new Promise<null>((_, reject) => {
+        setTimeout(() => reject(new Error('PDF_GENERATION_TIMEOUT')), 5000);
+      });
+
+      const result = await Promise.race([generatePDFBlob(), timeoutPromise]);
+
+      if (!result) {
+        openPrintWindow();
+        return;
+      }
+
+      const { blob, fileName } = result;
+      const pdfFile = new File([blob], fileName, { type: 'application/pdf' });
+
+      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+        await navigator.share({
+          title: 'လက်ရှိ ဟိုတယ်နေနိုင်ငံခြားသားစာရင်း',
+          files: [pdfFile]
+        });
+        showToast("Viber / Telegram သို့ PDF ဖိုင် မျှဝေပြီးပါပြီ");
+      } else {
+        // Desktop / Fallback: automatically download the PDF file
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast("PDF ဖိုင် ဒေါင်းလုဒ်ဆွဲပြီးပါပြီ။ Viber သို့ drag ဆွဲထည့်ပြီး ပေးပို့နိုင်ပါသည်။");
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        // User closed native share sheet - normal action
+        return;
+      }
+      console.warn("Viber PDF Share fallback:", err);
+      showToast("PDF တိုက်ရိုက်ထုတ်ယူမှု ဖွင့်လှစ်ပေးပါသည်");
+      openPrintWindow();
+    } finally {
+      // GUARANTEED STATE RESET: Never hang or lock UI
+      setIsGeneratingPDF(false);
+    }
+  };
+
+  // Dedicated Native Print / PDF Popup Engine (100% Pyidaungsu Compatible, Title/Date/Headers Repeated on Every Page)
+  const openPrintWindow = () => {
+    if (displayRows.length === 0) {
+      showToast("ထုတ်ယူရန် စာရင်းမရှိပါ");
+      return;
+    }
+
+    const printWindow = window.open('', '_blank', 'width=1200,height=800');
+    if (!printWindow) {
+      window.print();
+      return;
+    }
+
+    const formattedDate = useBurmeseDigits ? toBurmeseDigits(normalizeStandardDate(selectedDate)) : normalizeStandardDate(selectedDate);
+    const numColumns = visibleColumns.length || 1;
+
+    const columnsHtml = visibleColumns.map(colId => {
+      const col = CRT_COLUMNS_DEFINITION.find(c => c.id === colId);
+      return `<th style="border: 1px solid #000; padding: 6px 4px; font-weight: normal; font-size: 11px; background-color: #f8fafc; font-family: 'Pyidaungsu', Myanmar3, sans-serif; text-align: center;">${col?.label || ''}</th>`;
+    }).join('');
+
+    const rowsHtml = displayRows.map((r, idx) => {
+      const sr = useBurmeseDigits ? toBurmeseDigits(idx + 1) : (idx + 1);
+      const elapsed = useBurmeseDigits ? toBurmeseDigits(r.elapsedDays) : r.elapsedDays;
+      const gender = r.gender === 'M' ? 'ကျား' : r.gender === 'F' ? 'မ' : '-';
+      const visaPeriod = (r.stayFrom || r.stayTo) ? `${normalizeStandardDate(r.stayFrom)} မှ ${normalizeStandardDate(r.stayTo)}` : '-';
+      const arrivalDate = r.lastArrivalDate ? (useBurmeseDigits ? toBurmeseDigits(normalizeStandardDate(r.lastArrivalDate)) : normalizeStandardDate(r.lastArrivalDate)) : '-';
+
+      let cells = '';
+      if (visibleColumns.includes('sr')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${sr}</td>`;
+      if (visibleColumns.includes('passport')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-family: monospace; font-size: 11px;">${r.passport}</td>`;
+      if (visibleColumns.includes('nationality')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${r.nationality}</td>`;
+      if (visibleColumns.includes('fullname')) cells += `<td style="border: 1px solid #000; padding: 5px 4px; text-align: left; font-size: 11px;">${r.fullname}</td>`;
+      if (visibleColumns.includes('gender')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${gender}</td>`;
+      if (visibleColumns.includes('visaType')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${r.visaType}</td>`;
+      if (visibleColumns.includes('stayPeriod')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${visaPeriod}</td>`;
+      if (visibleColumns.includes('arrivalDate')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${arrivalDate}</td>`;
+      if (visibleColumns.includes('elapsedDays')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: center; font-size: 11px;">${elapsed}</td>`;
+      if (visibleColumns.includes('address')) cells += `<td style="border: 1px solid #000; padding: 5px 4px; text-align: left; font-size: 11px;">${r.address}</td>`;
+      if (visibleColumns.includes('remarks')) cells += `<td style="border: 1px solid #000; padding: 5px 3px; text-align: left; font-size: 10px;">${r.remarks || ''}</td>`;
+
+      return `<tr style="page-break-inside: avoid;">${cells}</tr>`;
+    }).join('');
+
+    const signerHtml = showSigner ? `
+      <div style="display: flex; justify-content: flex-end; margin-top: 35px; padding-right: 25px; page-break-inside: avoid;">
+        <div style="text-align: center; min-width: 240px; font-family: 'Pyidaungsu', Myanmar3, sans-serif;">
+          <div style="height: 35px;"></div>
+          <div style="font-size: 12px; font-weight: normal; color: #000;">(${officerTitle})</div>
+          <div style="font-size: 12px; font-weight: normal; color: #000; margin-top: 3px;">${officerName}</div>
+        </div>
+      </div>
+    ` : '';
+
+    const htmlDoc = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${tableTitle} - ${selectedDate}</title>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Pyidaungsu:wght@400;700&display=swap');
+            
+            @page {
+              size: A4 landscape;
+              margin: 10mm;
+            }
+            * {
+              box-sizing: border-box;
+              margin: 0;
+              padding: 0;
+            }
+            body {
+              font-family: 'Pyidaungsu', Myanmar3, sans-serif;
+              font-size: 11px;
+              line-height: 1.4;
+              color: #000;
+              background: #fff;
+              padding: 0;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              table-layout: auto;
+            }
+            thead {
+              display: table-header-group;
+            }
+            tbody {
+              display: table-row-group;
+            }
+            tr {
+              page-break-inside: avoid;
+            }
+            th, td {
+              font-family: 'Pyidaungsu', Myanmar3, sans-serif;
+              font-weight: normal;
+              color: #000;
+            }
+            .header-cell {
+              border: none !important;
+              padding: 0 0 8px 0;
+              background: transparent !important;
+              text-align: center;
+            }
+            .title-text {
+              font-family: 'Pyidaungsu', Myanmar3, sans-serif;
+              font-size: 15px;
+              font-weight: normal;
+              margin-bottom: 2px;
+              color: #000;
+              text-align: center;
+            }
+            .date-text {
+              font-family: 'Pyidaungsu', Myanmar3, sans-serif;
+              font-size: 11px;
+              font-weight: normal;
+              color: #000;
+              text-align: right;
+              padding-right: 4px;
+              margin-bottom: 4px;
+            }
+          </style>
+        </head>
+        <body>
+          <table>
+            <thead>
+              <tr style="page-break-inside: avoid;">
+                <th colspan="${numColumns}" class="header-cell">
+                  <div class="title-text">${tableTitle}</div>
+                  <div class="date-text">ရက်စွဲ၊ ${formattedDate}</div>
+                </th>
+              </tr>
+              <tr style="page-break-inside: avoid;">${columnsHtml}</tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+          ${signerHtml}
+          <script>
+            window.onload = function() {
+              setTimeout(function() {
+                window.focus();
+                window.print();
+              }, 300);
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.open();
+    printWindow.document.write(htmlDoc);
+    printWindow.document.close();
+
+    logActivity({
+      action: 'SETTINGS_CHANGE',
+      module: 'CRT',
+      targetId: 'Custom_Report_Print',
+      details: `Generated Clean Print/PDF (${displayRows.length} rows)`
+    });
+
+    showToast("Print / Save as PDF ဖွင့်လှစ်ပြီးပါပြီ");
   };
 
   return (
-    <div className="max-w-7xl mx-auto py-6 px-4 space-y-6">
-      {/* Sleek Minimal Header Banner */}
-      <div className="bg-slate-900 text-white rounded-3xl p-6 sm:p-7 shadow-xl border border-slate-800 no-print space-y-5">
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-          {/* Editable Title */}
-          <div className="flex items-center gap-3 flex-1 min-w-0">
+    <div className="max-w-7xl mx-auto py-6 px-4 space-y-5">
+      {/* 1. Executive Dashboard Header Bar (Row 1) */}
+      <div className="bg-slate-900 text-white rounded-3xl p-5 sm:p-6 shadow-xl border border-slate-800 no-print space-y-4">
+        <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+          {/* Left: Title, Date, Digits, and Preset */}
+          <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
             <div className="p-2.5 bg-indigo-600/30 text-indigo-400 rounded-2xl border border-indigo-500/30 shrink-0">
-              <FileSpreadsheet size={24} />
+              <FileSpreadsheet size={22} />
             </div>
-            <div className="flex-1 min-w-0">
+
+            {/* Editable Title */}
+            <div className="min-w-[200px] max-w-md">
               {isEditingTitle ? (
-                <div className="flex items-center gap-2 max-w-xl">
+                <div className="flex items-center gap-2">
                   <input
                     type="text"
                     defaultValue={tableTitle}
                     id="crt_title_input"
-                    className="flex-1 bg-slate-800 text-white border border-indigo-400 px-3 py-1.5 rounded-xl font-bold text-base outline-none font-pyidaungsu"
+                    className="bg-slate-800 text-white border border-indigo-400 px-3 py-1 rounded-xl font-bold text-sm outline-none font-pyidaungsu w-full"
                     autoFocus
                   />
                   <button
@@ -749,10 +1075,10 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                       const input = document.getElementById('crt_title_input') as HTMLInputElement;
                       if (input) handleSaveTitle(input.value);
                     }}
-                    className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl cursor-pointer shrink-0 shadow-md"
+                    className="p-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl cursor-pointer shrink-0 shadow-md"
                     title="သိမ်းဆည်းမည်"
                   >
-                    <Check size={16} />
+                    <Check size={15} />
                   </button>
                 </div>
               ) : (
@@ -761,32 +1087,16 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                   className="group cursor-pointer flex items-center gap-2"
                   title="ခေါင်းစဉ်ပြင်ရန် နှိပ်ပါ"
                 >
-                  <h2 className="text-xl sm:text-2xl font-black uppercase tracking-tight font-pyidaungsu text-white group-hover:text-indigo-200 transition-colors truncate">
+                  <h2 className="text-lg sm:text-xl font-black uppercase tracking-tight font-pyidaungsu text-white group-hover:text-indigo-200 transition-colors truncate">
                     {tableTitle}
                   </h2>
-                  <Edit3 size={15} className="text-indigo-400 opacity-60 group-hover:opacity-100 shrink-0" />
+                  <Edit3 size={14} className="text-indigo-400 opacity-60 group-hover:opacity-100 shrink-0" />
                 </div>
               )}
-              <p className="text-xs text-slate-400 font-semibold mt-0.5">
-                Official A4 Landscape Custom Report System
-              </p>
             </div>
-          </div>
 
-          {/* Quick Actions & Output Controls */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Dedicated Preset: နေ့စဥ်ပို့ရန် ဟိုတယ်စာရင်း */}
-            <button
-              onClick={applyDailyHotelPreset}
-              className="px-3.5 py-2 text-xs font-black rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
-              title="နေ့စဥ်ပို့ရန် ဟိုတယ်စာရင်း (ဗီဇာ S မပါ) အလိုအလျောက် သတ်မှတ်မည်"
-            >
-              <Building2 size={14} />
-              <span>နေ့စဥ်ပို့ရန် ဟိုတယ်စာရင်း</span>
-            </button>
-
-            {/* Reference Date Input */}
-            <div className="flex items-center gap-1.5 bg-slate-800/80 border border-slate-700 px-3 py-1.5 rounded-xl">
+            {/* Date Input */}
+            <div className="flex items-center gap-1.5 bg-slate-800/90 border border-slate-700 px-2.5 py-1.5 rounded-xl">
               <span className="text-[10px] text-slate-400 font-bold uppercase">ရက်စွဲ:</span>
               <input
                 type="date"
@@ -799,76 +1109,99 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
             {/* Burmese Digits Toggle */}
             <button
               onClick={() => setUseBurmeseDigits(!useBurmeseDigits)}
-              className={`px-3 py-1.5 text-xs font-black rounded-xl border transition-all cursor-pointer ${
+              className={`px-2.5 py-1.5 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
                 useBurmeseDigits 
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
-                  : 'bg-slate-800 text-slate-300 border-slate-700'
+                  : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
               }`}
+              title="နံပါတ် ဂဏန်းပုံစံ ပြောင်းလဲမည်"
             >
-              <span>{useBurmeseDigits ? '၁,၂,၃ (မြန်မာ)' : '1,2,3 (အင်္ဂလိပ်)'}</span>
+              <span>{useBurmeseDigits ? '၁,၂,၃ (မြန်မာ)' : '1,2,3 (Eng)'}</span>
             </button>
 
+            {/* Preset: နေ့စဥ် ဟိုတယ်စာရင်း */}
+            <button
+              onClick={applyDailyHotelPreset}
+              className="px-2.5 py-1.5 text-xs font-bold rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-all flex items-center gap-1 cursor-pointer"
+              title="နေ့စဥ်ပို့ရန် ဟိုတယ်စာရင်း (ဗီဇာ S မပါ) အလိုအလျောက် သတ်မှတ်မည်"
+            >
+              <Building2 size={13} />
+              <span>နေ့စဉ် ဟိုတယ်စာရင်း</span>
+            </button>
+          </div>
+
+          {/* Right: Clean Uniform Action Buttons Group */}
+          <div className="flex flex-wrap items-center gap-2">
             {/* Column Selector */}
             <button
               onClick={() => setIsColumnModalOpen(true)}
-              className="px-3 py-1.5 text-xs font-black rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 transition-all flex items-center gap-1.5 cursor-pointer"
+              className="h-9 px-3 text-xs font-bold rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
               title="ကော်လံများ စိတ်ကြိုက် ဖွင့်/ပိတ်ပါ"
             >
-              <Columns size={13} />
+              <Columns size={14} />
               <span>Columns ({visibleColumns.length})</span>
             </button>
 
             {/* Export Excel Button */}
             <button
               onClick={exportToExcel}
-              className="px-3.5 py-2 text-xs font-black rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+              className="h-9 px-3.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
               title="Export to Excel (.xlsx)"
             >
               <FileSpreadsheet size={14} />
               <span>Export Excel</span>
             </button>
 
-            {/* Direct Save PDF Button */}
+            {/* Mobile Share / Viber Button */}
             <button
-              onClick={exportDirectPDF}
-              disabled={isExportingPDF}
-              className="px-3.5 py-2 text-xs font-black rounded-xl bg-rose-600 hover:bg-rose-500 text-white shadow-lg transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
-              title="Save Direct A4 Landscape PDF"
+              onClick={handleShareViber}
+              disabled={isGeneratingPDF}
+              className="h-9 px-3.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+              title="Viber / Telegram သို့ PDF ဖိုင် တိုက်ရိုက် မျှဝေမည်"
             >
-              {isExportingPDF ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
-              <span>Save as PDF</span>
+              {isGeneratingPDF ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>PDF ပြင်ဆင်နေသည်...</span>
+                </>
+              ) : (
+                <>
+                  <Share2 size={14} />
+                  <span>Share (Viber)</span>
+                </>
+              )}
             </button>
 
-            {/* Print Button */}
+            {/* Save as PDF / Print Button */}
             <button
-              onClick={triggerPrint}
-              className="px-3.5 py-2 text-xs font-black rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
-              title="Print Table (A4 Landscape)"
+              onClick={openPrintWindow}
+              className="h-9 px-3.5 text-xs font-bold rounded-xl bg-rose-600 hover:bg-rose-500 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+              title="Save as PDF / Print (A4 Landscape Clean Popup)"
             >
               <Printer size={14} />
-              <span>Print Table</span>
+              <span>Save as PDF / Print</span>
             </button>
           </div>
         </div>
 
         {/* Minimal Signer Control Strip */}
-        <div className="pt-4 border-t border-slate-800 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
+        <div className="pt-3 border-t border-slate-800/80 flex flex-col md:flex-row gap-2.5 items-start md:items-center justify-between">
           <button
             type="button"
             onClick={() => handleToggleShowSigner(!showSigner)}
-            className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer border ${
+            className={`px-2.5 py-1 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer border ${
               showSigner
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                 : 'bg-slate-800 text-slate-400 border-slate-700'
             }`}
           >
-            <Shield size={13} className={showSigner ? "text-emerald-400" : "text-slate-500"} />
+            <Shield size={12} className={showSigner ? "text-emerald-400" : "text-slate-500"} />
             <span>{showSigner ? '✓ Signer ပါဝင်မည်' : '✕ Signer ဖြုတ်ထားသည်'}</span>
           </button>
 
           {showSigner && (
-            <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-              <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 px-3 py-1.5 rounded-xl flex-1 md:flex-initial">
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="flex items-center gap-1.5 bg-slate-800/90 border border-slate-700 px-2.5 py-1 rounded-xl flex-1 md:flex-initial">
                 <span className="text-[10px] text-slate-400 font-bold uppercase shrink-0">ရာထူး:</span>
                 <input
                   type="text"
@@ -876,11 +1209,11 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                   onChange={(e) => handleSaveOfficerTitle(e.target.value)}
                   list="crtOfficialTitlesList"
                   placeholder="ရာထူး..."
-                  className="bg-transparent text-white font-bold text-xs outline-none font-pyidaungsu w-32"
+                  className="bg-transparent text-white font-bold text-xs outline-none font-pyidaungsu w-28"
                 />
               </div>
 
-              <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 px-3 py-1.5 rounded-xl flex-1 md:flex-initial">
+              <div className="flex items-center gap-1.5 bg-slate-800/90 border border-slate-700 px-2.5 py-1 rounded-xl flex-1 md:flex-initial">
                 <span className="text-[10px] text-slate-400 font-bold uppercase shrink-0">အမည်:</span>
                 <input
                   type="text"
@@ -888,7 +1221,7 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                   onChange={(e) => handleSaveOfficerName(e.target.value)}
                   list="crtOfficialNamesList"
                   placeholder="အရာရှိ အမည်..."
-                  className="bg-transparent text-white font-bold text-xs outline-none font-pyidaungsu w-36"
+                  className="bg-transparent text-white font-bold text-xs outline-none font-pyidaungsu w-32"
                 />
               </div>
             </div>
@@ -916,11 +1249,11 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
         ))}
       </datalist>
 
-      {/* Direct On-Screen Filter Toolbar (No Sub-Tabs / Hidden Panels) */}
-      <div className="bg-white rounded-3xl p-5 shadow-md border border-slate-200/80 space-y-4 no-print">
-        {/* Top Row: Data Pool Selector & Counts */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          {/* Data Pool Selector */}
+      {/* 2. Executive Filter Bar (Row 2) */}
+      <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/90 space-y-3 no-print">
+        {/* Main Line: Segmented Pills, Inline Search, Filters Toggle & Reset */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* Segmented Pill Tabs */}
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl">
             <button
               onClick={() => setDataPool('STILL_IN')}
@@ -964,25 +1297,45 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
             </button>
           </div>
 
-          {/* Quick Selection Actions & Count Indicator */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500">
-              ပါဝင်သူ: <strong className="text-indigo-900 font-black">{displayRows.length}</strong> / {sortedRows.length} ဦး
-            </span>
+          {/* Inline Search, Advanced Filters Toggle & Reset */}
+          <div className="flex items-center gap-2 flex-1 max-w-xl justify-end">
+            {/* Inline Search Box with Clear Icon */}
+            <div className="relative flex-1 min-w-[180px] max-w-xs">
+              <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="ရှာဖွေရန် (ပတ်စပို့၊ အမည်၊ လိပ်စာ)..."
+                className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:border-indigo-500 outline-none"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  title="Clear Search"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Expandable Advanced Filters Toggle Button */}
             <button
-              onClick={() => toggleSelectAll(true)}
-              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 cursor-pointer transition-colors"
+              onClick={() => setIsFilterExpanded(!isFilterExpanded)}
+              className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer border ${
+                isFilterExpanded || activeAdvancedFilterCount > 0
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200 shadow-xs'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+              }`}
+              title="အဆင့်မြင့် စစ်ထုတ်မှုများ ဖွင့်/ပိတ်ပါ"
             >
-              <CheckSquare size={13} />
-              <span>အားလုံးရွေး</span>
+              <SlidersHorizontal size={13} />
+              <span>အဆင့်မြင့် စစ်ထုတ်မှုများ {activeAdvancedFilterCount > 0 && `(${activeAdvancedFilterCount})`}</span>
+              {isFilterExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
-            <button
-              onClick={() => toggleSelectAll(false)}
-              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 cursor-pointer transition-colors"
-            >
-              <Square size={13} />
-              <span>ပယ်ဖျက်</span>
-            </button>
+
+            {/* Reset Filters Button */}
             <button
               onClick={() => {
                 setSearchQuery('');
@@ -999,217 +1352,245 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                 setSortDirection('desc');
                 showToast("Filters Reset ပြုလုပ်ပြီးပါပြီ");
               }}
-              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg cursor-pointer transition-colors"
+              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl cursor-pointer transition-colors shrink-0"
               title="Reset All Filters"
             >
-              <RotateCcw size={13} />
+              <RotateCcw size={14} />
             </button>
           </div>
         </div>
 
-        {/* Direct Filter Controls Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          {/* Live Search */}
-          <div className="lg:col-span-2 relative">
-            <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ရှာဖွေရန် (ပတ်စပို့၊ အမည်၊ လိပ်စာ)..."
-              className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:border-indigo-500 outline-none"
-            />
-          </div>
+        {/* Collapsible Advanced Filters Panel (Default Collapsed) */}
+        {isFilterExpanded && (
+          <div className="pt-3 border-t border-slate-100 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5">
+              {/* Nationality Filter */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">နိုင်ငံသား</label>
+                <select
+                  value={filterNationality}
+                  onChange={(e) => setFilterNationality(e.target.value)}
+                  className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  <option value="ALL">နိုင်ငံသား အားလုံး</option>
+                  {uniqueNationalities.map(n => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Nationality Filter */}
-          <div>
-            <select
-              value={filterNationality}
-              onChange={(e) => setFilterNationality(e.target.value)}
-              className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
-            >
-              <option value="ALL">နိုင်ငံသား အားလုံး</option>
-              {uniqueNationalities.map(n => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-          </div>
+              {/* Visa Type Filter */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">ဗီဇာအမျိုးအစား</label>
+                <select
+                  value={filterVisaType}
+                  onChange={(e) => setFilterVisaType(e.target.value)}
+                  className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  <option value="ALL">ဗီဇာ အားလုံး</option>
+                  {uniqueVisaTypes.map(v => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Visa Type Filter */}
-          <div>
-            <select
-              value={filterVisaType}
-              onChange={(e) => setFilterVisaType(e.target.value)}
-              className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
-            >
-              <option value="ALL">ဗီဇာ အားလုံး</option>
-              {uniqueVisaTypes.map(v => (
-                <option key={v} value={v}>{v}</option>
-              ))}
-            </select>
-          </div>
+              {/* Address Category */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">လိပ်စာအမျိုးအစား</label>
+                <select
+                  value={filterAddressType}
+                  onChange={(e) => setFilterAddressType(e.target.value as any)}
+                  className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  <option value="ALL">လိပ်စာ အားလုံး</option>
+                  <option value="OTHER">ဟိုတယ် / အခြားလိပ်စာ</option>
+                  <option value="COMPANY">ကုမ္ပဏီ (Company)</option>
+                </select>
+              </div>
 
-          {/* Address Category */}
-          <div>
-            <select
-              value={filterAddressType}
-              onChange={(e) => setFilterAddressType(e.target.value as any)}
-              className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
-            >
-              <option value="ALL">လိပ်စာ အားလုံး</option>
-              <option value="OTHER">ဟိုတယ် / အခြားလိပ်စာ</option>
-              <option value="COMPANY">ကုမ္ပဏီ (Company)</option>
-            </select>
-          </div>
-
-          {/* Sorting Field */}
-          <div className="flex items-center gap-1.5">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-indigo-900 outline-none cursor-pointer"
-            >
-              <option value="elapsed">ရက်ပေါင်း (Elapsed)</option>
-              <option value="arrival">ရောက်ရှိရက် (Arrival)</option>
-              <option value="passport">ပတ်စပို့ (Passport)</option>
-              <option value="name">အမည် (Name)</option>
-              <option value="nationality">နိုင်ငံ (Nationality)</option>
-              <option value="address">လိပ်စာ (Address)</option>
-              <option value="visa">ဗီဇာ (Visa)</option>
-              <option value="stayTo">သက်တမ်းကုန် (Stay Expiry)</option>
-              <option value="custom">စိတ်ကြိုက် (Custom)</option>
-            </select>
-
-            <button
-              onClick={() => setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
-              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl cursor-pointer border border-slate-200 shrink-0"
-              title={sortDirection === 'asc' ? 'ငယ်စဉ်ကြီးလိုက် (Asc)' : 'ကြီးစဉ်ငယ်လိုက် (Desc)'}
-            >
-              <ArrowUpDown size={14} />
-            </button>
-          </div>
-        </div>
-
-        {/* Secondary Filters Strip (Visa S Exclude Toggle, Gender, Min Days & Date Range) */}
-        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100 text-xs">
-          {/* Exclude Visa S Toggle */}
-          <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 font-bold cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={excludeVisaS}
-              onChange={(e) => setExcludeVisaS(e.target.checked)}
-              className="w-3.5 h-3.5 rounded text-amber-600 cursor-pointer"
-            />
-            <span>ဗီဇာ အမျိုးအစား S မပါ (Exclude Special/Stay)</span>
-          </label>
-
-          {/* Gender */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 font-bold">ကျား/မ:</span>
-            <select
-              value={filterGender}
-              onChange={(e) => setFilterGender(e.target.value as any)}
-              className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none cursor-pointer text-xs"
-            >
-              <option value="ALL">အားလုံး</option>
-              <option value="M">ကျား (M)</option>
-              <option value="F">မ (F)</option>
-            </select>
-          </div>
-
-          {/* Min Days */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 font-bold">အနည်းဆုံး ရက်:</span>
-            <input
-              type="number"
-              value={minElapsedDays}
-              onChange={(e) => setMinElapsedDays(e.target.value)}
-              placeholder="ရက်ပေါင်း..."
-              className="w-20 py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none text-xs"
-            />
-          </div>
-
-          {/* Date Range */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 font-bold">ရောက်ရှိရက်စွဲ:</span>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none text-xs"
-            />
-            <span className="text-slate-400 font-bold">မှ</span>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none text-xs"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Row Selection & Custom Sorting Drawer */}
-      <div className="bg-slate-50 border border-slate-200 rounded-3xl p-4 no-print">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-black uppercase text-slate-700 tracking-wider">
-            Row Selection & Custom Sequence ({sortedRows.length} items)
-          </span>
-          <span className="text-[10px] text-slate-500 font-semibold hidden sm:inline">
-            ဇယားတွင် ပါဝင်လိုသူများကို Checkbox ဖြင့် ရွေးချယ်နိုင်ပြီး ▲ / ▼ ဖြင့် အစီအစဉ် ရွှေ့နိုင်ပါသည်
-          </span>
-        </div>
-
-        <div className="max-h-48 overflow-y-auto bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
-          {sortedRows.length === 0 ? (
-            <div className="p-4 text-center text-xs text-slate-400 italic">
-              စစ်ထုတ်ထားသော အချက်အလက် မရှိပါ။
-            </div>
-          ) : (
-            sortedRows.map((r, idx) => (
-              <div 
-                key={r.id} 
-                className={`p-2 flex items-center justify-between text-xs transition-colors ${
-                  r.selected ? 'bg-indigo-50/30' : 'bg-slate-50/50 opacity-60'
-                }`}
-              >
-                <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                  <input
-                    type="checkbox"
-                    checked={r.selected}
-                    onChange={() => toggleRowSelect(r.id)}
-                    className="w-3.5 h-3.5 rounded text-indigo-600 cursor-pointer"
-                  />
-                  <span className="font-bold text-slate-400 w-5 text-center text-[10px]">{idx + 1}</span>
-                  <span className="font-mono font-black text-indigo-950 text-[11px]">{r.passport}</span>
-                  <span className="font-bold text-slate-800 truncate max-w-[160px]">{r.fullname}</span>
-                  <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-bold">{r.nationality}</span>
-                  <span className="text-[10px] text-slate-500 truncate max-w-[180px]">{r.address}</span>
-                  <span className="text-[10px] font-bold text-indigo-700">{r.elapsedDays} ရက်</span>
-                </div>
-
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => handleMoveRow(r.id, 'up')}
-                    disabled={idx === 0}
-                    className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-30 cursor-pointer"
-                    title="အပေါ်သို့ ရွှေ့မည်"
+              {/* Sorting Field */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">အစီအစဉ် စီစဉ်ရန်</label>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as any)}
+                    className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-indigo-900 outline-none cursor-pointer"
                   >
-                    <ArrowUp size={12} />
-                  </button>
+                    <option value="elapsed">ရက်ပေါင်း (Elapsed)</option>
+                    <option value="arrival">ရောက်ရှိရက် (Arrival)</option>
+                    <option value="passport">ပတ်စပို့ (Passport)</option>
+                    <option value="name">အမည် (Name)</option>
+                    <option value="nationality">နိုင်ငံ (Nationality)</option>
+                    <option value="address">လိပ်စာ (Address)</option>
+                    <option value="visa">ဗီဇာ (Visa)</option>
+                    <option value="stayTo">သက်တမ်းကုန် (Stay Expiry)</option>
+                    <option value="custom">စိတ်ကြိုက် (Custom)</option>
+                  </select>
+
                   <button
-                    onClick={() => handleMoveRow(r.id, 'down')}
-                    disabled={idx === sortedRows.length - 1}
-                    className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-30 cursor-pointer"
-                    title="အောက်သို့ ရွှေ့မည်"
+                    onClick={() => setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
+                    className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl cursor-pointer border border-slate-200 shrink-0"
+                    title={sortDirection === 'asc' ? 'ငယ်စဉ်ကြီးလိုက် (Asc)' : 'ကြီးစဉ်ငယ်လိုက် (Desc)'}
                   >
-                    <ArrowDown size={12} />
+                    <ArrowUpDown size={14} />
                   </button>
                 </div>
               </div>
-            ))
-          )}
+
+              {/* Gender */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">ကျား/မ</label>
+                <select
+                  value={filterGender}
+                  onChange={(e) => setFilterGender(e.target.value as any)}
+                  className="w-full py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  <option value="ALL">ကျား/မ အားလုံး</option>
+                  <option value="M">ကျား (M)</option>
+                  <option value="F">မ (F)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Extra Row: Exclude Visa S, Min Days, Date Range */}
+            <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100 text-xs">
+              {/* Exclude Visa S Toggle */}
+              <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 font-bold cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={excludeVisaS}
+                  onChange={(e) => setExcludeVisaS(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded text-amber-600 cursor-pointer"
+                />
+                <span>ဗီဇာ အမျိုးအစား S မပါ (Exclude Special/Stay)</span>
+              </label>
+
+              {/* Min Days */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400 font-bold">အနည်းဆုံး ရက်:</span>
+                <input
+                  type="number"
+                  value={minElapsedDays}
+                  onChange={(e) => setMinElapsedDays(e.target.value)}
+                  placeholder="ရက်ပေါင်း..."
+                  className="w-20 py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none text-xs"
+                />
+              </div>
+
+              {/* Date Range */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400 font-bold">ရောက်ရှိရက်:</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none text-xs"
+                />
+                <span className="text-slate-400 font-bold">မှ</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="py-1 px-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none text-xs"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 3. Row Selection & Custom Sequence Collapsible Bar (Row 3) */}
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 no-print">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* Count summary */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-600">
+              ရွေးချယ်ထားသော စာရင်းများ: <strong className="text-indigo-900 font-black">{displayRows.length}</strong> / {sortedRows.length} ဦး
+            </span>
+          </div>
+
+          {/* Sticky Quick Actions & Collapse Toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => toggleSelectAll(true)}
+              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 flex items-center gap-1 cursor-pointer transition-colors shadow-xs"
+            >
+              <CheckSquare size={13} />
+              <span>အားလုံးရွေး</span>
+            </button>
+            <button
+              onClick={() => toggleSelectAll(false)}
+              className="px-2.5 py-1 text-xs font-bold rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 flex items-center gap-1 cursor-pointer transition-colors shadow-xs"
+            >
+              <Square size={13} />
+              <span>ပယ်ဖျက်</span>
+            </button>
+            <button
+              onClick={() => setIsChecklistExpanded(!isChecklistExpanded)}
+              className="px-3 py-1 text-xs font-bold rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-700 flex items-center gap-1 cursor-pointer transition-colors"
+            >
+              <span>{isChecklistExpanded ? 'စာရင်း အသေးစိတ် ဝှက်ရန်' : 'စာရင်း အသေးစိတ် ကြည့်ရန် / ပြင်ရန်'}</span>
+              {isChecklistExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            </button>
+          </div>
         </div>
+
+        {/* Expandable Checklist Content (Default Collapsed) */}
+        {isChecklistExpanded && (
+          <div className="mt-3 pt-3 border-t border-slate-200">
+            <div className="max-h-56 overflow-y-auto bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
+              {sortedRows.length === 0 ? (
+                <div className="p-4 text-center text-xs text-slate-400 italic">
+                  စစ်ထုတ်ထားသော အချက်အလက် မရှိပါ။
+                </div>
+              ) : (
+                sortedRows.map((r, idx) => (
+                  <div 
+                    key={r.id} 
+                    className={`p-2 flex items-center justify-between text-xs transition-colors ${
+                      r.selected ? 'bg-indigo-50/30' : 'bg-slate-50/50 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={r.selected}
+                        onChange={() => toggleRowSelect(r.id)}
+                        className="w-3.5 h-3.5 rounded text-indigo-600 cursor-pointer"
+                      />
+                      <span className="font-bold text-slate-400 w-5 text-center text-[10px]">{idx + 1}</span>
+                      <span className="font-mono font-black text-indigo-950 text-[11px]">{r.passport}</span>
+                      <span className="font-bold text-slate-800 truncate max-w-[160px]">{r.fullname}</span>
+                      <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-bold">{r.nationality}</span>
+                      <span className="text-[10px] text-slate-500 truncate max-w-[180px]">{r.address}</span>
+                      <span className="text-[10px] font-bold text-indigo-700">{r.elapsedDays} ရက်</span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleMoveRow(r.id, 'up')}
+                        disabled={idx === 0}
+                        className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-30 cursor-pointer"
+                        title="အပေါ်သို့ ရွှေ့မည်"
+                      >
+                        <ArrowUp size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleMoveRow(r.id, 'down')}
+                        disabled={idx === sortedRows.length - 1}
+                        className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-30 cursor-pointer"
+                        title="အောက်သို့ ရွှေ့မည်"
+                      >
+                        <ArrowDown size={12} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* The Printable A4 Landscape Report Sheet View */}
@@ -1442,12 +1823,12 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                                 )}
                                 {visibleColumns.includes('stayPeriod') && (
                                   <td className="p-1.5 border border-black text-center font-normal break-words">
-                                    {(m.stayFrom || m.stayTo) ? `${m.stayFrom || '-'} မှ ${m.stayTo || '-'}` : '-'}
+                                    {(m.stayFrom || m.stayTo) ? (useBurmeseDigits ? toBurmeseDigits(`${normalizeStandardDate(m.stayFrom)} မှ ${normalizeStandardDate(m.stayTo)}`) : `${normalizeStandardDate(m.stayFrom)} မှ ${normalizeStandardDate(m.stayTo)}`) : '-'}
                                   </td>
                                 )}
                                 {visibleColumns.includes('arrivalDate') && (
                                   <td className="p-1.5 border border-black text-center font-normal">
-                                    {m.lastArrivalDate}
+                                    {m.lastArrivalDate ? (useBurmeseDigits ? toBurmeseDigits(normalizeStandardDate(m.lastArrivalDate)) : normalizeStandardDate(m.lastArrivalDate)) : '-'}
                                   </td>
                                 )}
                                 {visibleColumns.includes('elapsedDays') && (
