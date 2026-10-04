@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps, deleteRecordFromFirestore, trackDeletedRecord, getDeletedRecordIds, clearDeletedRecordIds } from './lib/firebase';
+import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps } from './lib/firebase';
 import { 
   Link2,
   Link,
@@ -91,14 +91,11 @@ import {
 import { DobNumpadInput } from './components/DobNumpadInput';
 import { StayPeriodInput } from './components/StayPeriodInput';
 import { IndividualSearch } from './components/IndividualSearch';
-import { CounterCheckModal } from './components/CounterCheckModal';
 import { CloudSyncStatusModal } from './components/CloudSyncStatusModal';
 import { WatchList } from './components/WatchList';
 import { CustomReportTable } from './components/CustomReportTable';
 import { ActivityLogView } from './components/ActivityLogView';
-import { PermitManagementConsole } from './components/PermitManagementConsole';
 import { logActivity } from './utils/activityLogger';
-import { analyzeRecordsForErrors } from './utils/counterCheck';
 import { miniDB } from './db';
 
 // --- UTILS ---
@@ -1732,1668 +1729,6 @@ const StillInAnalytics = ({
   );
 };
 
-/* --- CHECKING HISTORY INTERFACE --- */
-interface CheckingHistoryEntry {
-  id: string;
-  passport: string;
-  fullname: string;
-  nationality: string;
-  type: 'CO_LTD' | 'OTHERS';
-  checkDate: string; // YYYY-MM-DD
-  originalAddress: string;
-  confirmedAddress: string;
-  confirmedStayDescription?: string;
-  status: 'STILL PERMITTED' | 'STILL NOT PERMITTED YET' | 'STILL CONFIRMED' | 'STAY PERMITTED' | 'STAY NOT PERMITTED' | (string & {});
-  permittedBy?: string;
-  officerName: string;
-  officerTitle: string;
-  timestamp: string;
-  previousPassport?: string;
-  dualPassportRemarks?: string;
-  linkedPassports?: string[];
-  syncStatus?: 'pending_sync' | 'upload_failed' | 'synced';
-  updatedAt?: string;
-}
-
-interface CheckingRowProps {
-  key?: React.Key;
-  m?: MovementData;
-  h?: CheckingHistoryEntry;
-  isCo: boolean;
-  currentUser?: { name: string; title: string; } | null;
-  cloudAuthUser?: CloudAuthUser | null;
-  isViewer?: boolean;
-  showToast?: (msg: string) => void;
-  onCheckSubmitted: (entry: CheckingHistoryEntry) => void;
-  onCheckUpdated?: (entry: CheckingHistoryEntry) => void;
-  onCheckRemoved?: (id: string, passport: string) => void;
-  records: ImmRecord[];
-  syncMaster?: (value: string, type: 'Nationality' | 'Visa' | 'Stay' | 'Vehicle' | 'Agent' | 'Contact' | 'Official' | 'Title' | 'Reporter' | 'Phone' | 'PermitDescription', linkedValue?: string) => void;
-  masterData?: MasterItem[];
-}
-
-/* --- MOBILE CHECKING CARD COMPONENT --- */
-const CheckingCard = ({
-  m,
-  h,
-  isCo,
-  currentUser,
-  cloudAuthUser,
-  isViewer,
-  showToast,
-  onCheckSubmitted,
-  onCheckUpdated,
-  onCheckRemoved,
-  records,
-  syncMaster,
-  masterData
-}: CheckingRowProps): React.JSX.Element => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [verificationType, setVerificationType] = useState<'CO_LTD' | 'OTHERS'>(() => h ? h.type : (isCo ? 'CO_LTD' : 'OTHERS'));
-  
-  const pNo = h ? h.passport : (m?.p || '');
-  const name = h ? h.fullname : (m?.n || '');
-  const nat = h ? h.nationality : (m?.nat || '');
-  const loc = h ? h.originalAddress : (m?.loc || '');
-  const start = h ? '' : (m?.start || '');
-  const end = h ? '' : (m?.end || '');
-
-  const [coStatus, setCoStatus] = useState<PermitStatus>(() => {
-    if (h) return h.status as any;
-    return 'နေထိုင်ခွင့်ကျထားသောသူ';
-  });
-  
-  const defaultPermittedBy = useMemo(() => {
-    if (h) return h.permittedBy || '';
-    const matched = records.filter(r => r.passport.toUpperCase() === pNo.toUpperCase())
-      .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
-    return matched[0]?.permittedBy || '';
-  }, [records, pNo, h]);
-
-  const [permittedBy, setPermittedBy] = useState(defaultPermittedBy);
-  const [prevPassport, setPrevPassport] = useState(() => (h as any)?.previousPassport || (m as any)?.previousPassport || "");
-  const [dualRemarks, setDualRemarks] = useState(() => (h as any)?.dualPassportRemarks || (m as any)?.dualPassportRemarks || "");
-  const [confirmedAddress, setConfirmedAddress] = useState(() => h ? h.confirmedAddress : loc);
-  const [confirmedStayDescription, setConfirmedStayDescription] = useState(() => {
-    if (h) return h.confirmedStayDescription || '';
-    const masterMatch = masterData?.find(x => x.type === 'Stay' && x.name.toLowerCase() === loc.toLowerCase());
-    if (masterMatch?.linkedValue) return masterMatch.linkedValue;
-    const recMatch = records.find(r => r.address?.toLowerCase() === loc.toLowerCase() && r.stayDescription);
-    return recMatch?.stayDescription || '';
-  });
-  const [checkDate, setCheckDate] = useState(() => h ? h.checkDate : new Date().toISOString().split('T')[0]);
-  const [officerName, setOfficerName] = useState(() => h ? h.officerName : (currentUser?.name || localStorage.getItem('lastCheckedOfficerName') || ''));
-  const [officerTitle, setOfficerTitle] = useState(() => h ? h.officerTitle : (currentUser?.title || localStorage.getItem('lastCheckedOfficerTitle') || 'Officer'));
-
-  useEffect(() => {
-    if (currentUser && !h) {
-      setOfficerName(currentUser.name);
-      setOfficerTitle(currentUser.title);
-    }
-  }, [currentUser, h]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isViewer) {
-      if (showToast) showToast("🔒 Viewer level ဖြစ်သောကြောင့် Stay Verification သစ် ဖြည့်သွင်း/ပြင်ဆင်၍မရပါ");
-      return;
-    }
-    if (!coStatus) return;
-
-    if (!currentUser) {
-      if (officerName) localStorage.setItem('lastCheckedOfficerName', officerName);
-      if (officerTitle) localStorage.setItem('lastCheckedOfficerTitle', officerTitle);
-    }
-
-    if (coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' && permittedBy.trim() && syncMaster) {
-      syncMaster(permittedBy.trim(), 'PermitDescription');
-    }
-    if (confirmedAddress.trim() && syncMaster) {
-      syncMaster(confirmedAddress.trim(), 'Stay', confirmedStayDescription);
-    }
-    if (officerName.trim() && syncMaster) {
-      syncMaster(officerName.trim(), 'Official');
-    }
-    if (officerTitle.trim() && syncMaster) {
-      syncMaster(officerTitle.trim(), 'Title');
-    }
-
-    if (h) {
-      const updatedCheck: CheckingHistoryEntry = {
-        ...h,
-        confirmedAddress,
-        confirmedStayDescription,
-        status: coStatus as any,
-        permittedBy: (coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' || coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ') ? permittedBy : '',
-        officerName: officerName || 'System Officer',
-        officerTitle: officerTitle || 'Officer',
-        checkDate,
-        type: verificationType,
-        previousPassport: prevPassport ? prevPassport.toUpperCase().trim() : undefined,
-        dualPassportRemarks: dualRemarks ? dualRemarks.trim() : undefined,
-        linkedPassports: prevPassport ? Array.from(new Set([pNo.toUpperCase(), prevPassport.toUpperCase().trim()])) : (h as any)?.linkedPassports,
-      };
-      if (onCheckUpdated) onCheckUpdated(updatedCheck);
-    } else {
-      const newCheck: CheckingHistoryEntry = {
-        id: Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9),
-        passport: pNo.toUpperCase(),
-        fullname: name,
-        nationality: nat,
-        type: verificationType,
-        checkDate,
-        originalAddress: loc,
-        confirmedAddress: confirmedAddress,
-        confirmedStayDescription: confirmedStayDescription,
-        status: coStatus as any,
-        permittedBy: (coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' || coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ') ? permittedBy : '',
-        officerName: officerName || 'System Officer',
-        officerTitle: officerTitle || 'Officer',
-        previousPassport: prevPassport ? prevPassport.toUpperCase().trim() : undefined,
-        dualPassportRemarks: dualRemarks ? dualRemarks.trim() : undefined,
-        linkedPassports: prevPassport ? Array.from(new Set([pNo.toUpperCase(), prevPassport.toUpperCase().trim()])) : undefined,
-        timestamp: new Date().toISOString()
-      };
-      onCheckSubmitted(newCheck);
-    }
-    setIsExpanded(false);
-  };
-
-  return (
-    <div className={`p-3.5 sm:p-4 rounded-2xl border shadow-xs transition-all space-y-3 ${
-      h ? 'bg-emerald-50/30 border-emerald-200/80' : 'bg-amber-50/30 border-amber-200/80'
-    }`}>
-      {/* Top row: Status Tag + Passport */}
-      <div className="flex items-center justify-between gap-2 border-b border-slate-200/60 pb-2">
-        <div>
-          {h ? (
-            h.type === 'CO_LTD' ? (
-              <span className="text-[10px] bg-emerald-100 text-emerald-900 border border-emerald-300/80 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider block w-fit">
-                ✅ Corp. Checked
-              </span>
-            ) : (
-              <span className="text-[10px] bg-teal-100 text-teal-900 border border-teal-300/80 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider block w-fit">
-                ✅ Std. Checked
-              </span>
-            )
-          ) : (
-            verificationType === 'CO_LTD' ? (
-              <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300/80 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider block w-fit animate-pulse">
-                ⏳ Corp. Pending
-              </span>
-            ) : (
-              <span className="text-[10px] bg-indigo-100 text-indigo-900 border border-indigo-300/80 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider block w-fit animate-pulse">
-                ⏳ Std. Pending
-              </span>
-            )
-          )}
-        </div>
-        <div className="font-black text-[#1A365D] text-xs sm:text-sm font-mono tracking-tight bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
-          {pNo}
-        </div>
-      </div>
-
-      {/* Guest Name & Nationality */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="space-y-0.5">
-          <div className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-tight">{name}</div>
-          <div className="text-[10px] sm:text-[11px] font-extrabold text-slate-500 uppercase">
-            Nat: <span className="text-slate-800">{nat}</span>
-          </div>
-        </div>
-        {h ? (
-          <div className="text-right text-[10px] sm:text-[11px] font-mono">
-            <div className="font-bold text-slate-700">Checked: {checkDate}</div>
-            <div className="text-[9px] sm:text-[10px] text-slate-500 font-sans font-medium">{officerTitle} {officerName}</div>
-          </div>
-        ) : (
-          <div className="text-right text-[10px] sm:text-[11px] font-mono">
-            <div className="text-slate-400">Exp To:</div>
-            <div className="font-black text-[#1A365D]">{end || 'N/A'}</div>
-            <div className="text-[9px] font-bold text-amber-600 uppercase">({getLiveRemainingDays(end)})</div>
-          </div>
-        )}
-      </div>
-
-      {/* Address */}
-      <div className="bg-white p-2.5 rounded-xl border border-slate-200/80 text-xs">
-        <div className="font-extrabold text-slate-900 text-xs flex items-start gap-1.5 leading-snug">
-          <span className="shrink-0">📍</span> <span>{confirmedAddress}</span>
-        </div>
-        {confirmedStayDescription && (
-          <div className="text-[10px] text-slate-500 font-mono mt-1 italic pl-5">
-            🏡 Detail: {confirmedStayDescription}
-          </div>
-        )}
-      </div>
-
-      {/* Status Details & Actions */}
-      <div className="flex items-center justify-between text-xs pt-0.5">
-        {h ? (
-          <div>
-            {coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' ? (
-              <span className="text-[9px] font-black uppercase text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-0.5">
-                STAY PERMITTED
-              </span>
-            ) : coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ' ? (
-              <span className="text-[9px] font-black uppercase text-rose-800 bg-rose-50 border border-rose-200 rounded-md px-2 py-0.5">
-                STAY NOT PERMITTED
-              </span>
-            ) : (
-              <span className="text-[9px] font-black uppercase text-blue-800 bg-blue-50 border border-blue-200 rounded-md px-2 py-0.5">
-                STILL CONFIRMED
-              </span>
-            )}
-            {permittedBy && (
-              <div className="text-[9px] text-indigo-900 font-bold mt-0.5">
-                Desc: <span className="text-purple-700">{permittedBy}</span>
-              </div>
-            )}
-          </div>
-        ) : (
-          <span className="text-[10px] bg-amber-50 text-amber-800 font-black rounded-lg border border-amber-200 px-2.5 py-1">
-            ⚠️ Awaiting Verification
-          </span>
-        )}
-
-        <div className="flex items-center gap-1.5">
-          {h ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setIsExpanded(!isExpanded)}
-                className={`text-[10px] font-black uppercase px-3 py-1.5 rounded-xl border transition-all min-h-[34px] ${
-                  isExpanded
-                    ? 'bg-slate-100 border-slate-300 text-slate-700'
-                    : 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600'
-                }`}
-              >
-                {isExpanded ? 'Cancel' : 'Edit Log'}
-              </button>
-              {onCheckRemoved && (
-                <button
-                  type="button"
-                  onClick={() => onCheckRemoved(h.id, h.passport)}
-                  className="text-[10px] font-black uppercase text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl hover:bg-rose-100 min-h-[34px]"
-                >
-                  Undo
-                </button>
-              )}
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setIsExpanded(!isExpanded)}
-              className={`text-[10px] font-black uppercase px-3.5 py-2 rounded-xl transition-all shadow-xs text-center min-h-[36px] ${
-                isExpanded 
-                  ? 'bg-slate-100 text-slate-700 border border-slate-300' 
-                  : (verificationType === 'CO_LTD')
-                  ? 'bg-amber-600 text-white hover:bg-amber-700'
-                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
-              }`}
-            >
-              {isExpanded ? 'Close Form' : 'Verify Physical'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Mobile Form Overlay */}
-      {isExpanded && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.2 }}
-          className="pt-2 border-t border-slate-200"
-        >
-          <form onSubmit={handleSubmit} className="space-y-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-inner text-xs">
-            <div className="text-xs font-black text-slate-800 uppercase flex items-center justify-between border-b pb-2">
-              <span>{h ? '✏️ Edit Stay Verification' : '🔍 Stay Verification Check'}</span>
-              <span className="font-mono text-indigo-900 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">{pNo}</span>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="block text-[10px] font-black uppercase text-slate-600">
-                🏢 Classification (အမျိုးအစား ရွေးရန်)
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <label className={`flex items-center justify-center p-2.5 rounded-xl border text-[10px] sm:text-xs font-black text-center cursor-pointer transition-all min-h-[40px] ${
-                  verificationType === 'CO_LTD'
-                    ? 'border-amber-500 bg-amber-50 text-amber-900 shadow-2xs'
-                    : 'border-slate-200 bg-slate-50 text-slate-600'
-                }`}>
-                  <input
-                    type="radio"
-                    name={`mVerificationType-${pNo}`}
-                    value="CO_LTD"
-                    checked={verificationType === 'CO_LTD'}
-                    onChange={() => {
-                      setVerificationType('CO_LTD');
-                      setCoStatus('နေထိုင်ခွင့်ကျထားသောသူ');
-                    }}
-                    className="sr-only"
-                  />
-                  🏢 CO. LTD. (ကုမ္ပဏီ)
-                </label>
-                <label className={`flex items-center justify-center p-2.5 rounded-xl border text-[10px] sm:text-xs font-black text-center cursor-pointer transition-all min-h-[40px] ${
-                  verificationType === 'OTHERS'
-                    ? 'border-indigo-500 bg-indigo-50 text-indigo-900 shadow-2xs'
-                    : 'border-slate-200 bg-slate-50 text-slate-600'
-                }`}>
-                  <input
-                    type="radio"
-                    name={`mVerificationType-${pNo}`}
-                    value="OTHERS"
-                    checked={verificationType === 'OTHERS'}
-                    onChange={() => {
-                      setVerificationType('OTHERS');
-                      setCoStatus('နေထိုင်ခွင့်ကျထားသောသူ');
-                    }}
-                    className="sr-only"
-                  />
-                  🏨 HOTEL (ဟိုတယ်)
-                </label>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black uppercase text-slate-600 mb-1">
-                🏡 Address (နေထိုင်ရာလိပ်စာ)
-              </label>
-              <input
-                type="text"
-                value={confirmedAddress}
-                list="checkingStayList"
-                onChange={(e) => {
-                  const val = e.target.value;
-                  const match = masterData?.find(m => m.type === 'Stay' && m.name.toLowerCase() === val.toLowerCase());
-                  setConfirmedAddress(val);
-                  setConfirmedStayDescription(match ? (match.linkedValue || '') : confirmedStayDescription);
-                }}
-                className="input-field bg-slate-50 text-xs font-bold rounded-xl py-2 px-3 border-slate-200"
-                placeholder="Address..."
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black uppercase text-slate-600 mb-1">
-                🏡 Detail Description (လိပ်စာအသေးစိတ်)
-              </label>
-              <input
-                type="text"
-                value={confirmedStayDescription}
-                list="checkingStayDescList"
-                onChange={(e) => setConfirmedStayDescription(e.target.value)}
-                className="input-field bg-slate-50 text-xs font-bold rounded-xl py-2 px-3 border-slate-200"
-                placeholder="Detail stay info..."
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black uppercase text-slate-600 mb-1">
-                🟢 Status (ခွင့်ပြုချက် အခြေအနေ)
-              </label>
-              <select
-                value={coStatus}
-                onChange={(e) => {
-                  const newStatus = e.target.value as any;
-                  setCoStatus(newStatus);
-                  const hist = records.filter(r => r.passport.toUpperCase() === pNo.toUpperCase() && (r.stillPermittedStatus === newStatus || (newStatus === 'STAY PERMITTED' && r.stillPermittedStatus === 'STILL PERMITTED')))
-                    .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp))[0];
-                  setPermittedBy(hist?.permittedBy || '');
-                }}
-                className="input-field bg-slate-50 font-black text-xs uppercase rounded-xl py-2 px-3 border-slate-200"
-                required
-              >
-                <option value="STAY PERMITTED">STAY PERMITTED (ခွင့်ပြုထားဆဲ - သီးခြားနေထိုင်ခွင့်ပြုသူ)</option>
-                <option value="STAY NOT PERMITTED">STAY NOT PERMITTED (ခွင့်မပြုသေးပါ)</option>
-              </select>
-            </div>
-
-            {(coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' || coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ') && (
-              <div>
-                <label className="block text-[10px] font-black uppercase text-slate-600 mb-1">
-                  📝 {coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' ? 'Permit Description' : 'Reason / Description'}
-                </label>
-                <input
-                  type="text"
-                  value={permittedBy}
-                  list={coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' ? "checkingPermitDescriptionList" : undefined}
-                  onChange={(e) => setPermittedBy(e.target.value)}
-                  className="input-field bg-slate-50 font-bold rounded-xl text-xs py-2 px-3 border-slate-200"
-                  placeholder="Reason / Description..."
-                  required={coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ'}
-                />
-              </div>
-            )}
-
-            {/* Dual / Previous Passport Linking in Card */}
-            <div className="p-2.5 bg-purple-50/60 border border-purple-200/80 rounded-xl space-y-2">
-              <label className="text-[10px] font-black uppercase text-purple-900 flex items-center gap-1">
-                <Link2 size={12} className="text-purple-600" />
-                🔗 Linked / Previous Passport (ယခင် Passport နံပါတ်ဟောင်း)
-              </label>
-              <input
-                type="text"
-                value={prevPassport}
-                onChange={(e) => setPrevPassport(e.target.value.toUpperCase())}
-                className="input-field bg-white font-mono font-bold text-xs uppercase rounded-lg py-1.5 px-2.5 border-purple-200 text-purple-950"
-                placeholder="e.g. OLD PASSPORT NO."
-              />
-              <input
-                type="text"
-                value={dualRemarks}
-                onChange={(e) => setDualRemarks(e.target.value)}
-                className="input-field bg-white font-medium text-xs rounded-lg py-1.5 px-2.5 border-purple-200 text-slate-800"
-                placeholder="Dual Passport Remarks / မှတ်ချက်..."
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[10px] font-black uppercase text-slate-600 mb-1">
-                  📅 Check Date
-                </label>
-                <input
-                  type="date"
-                  value={checkDate}
-                  onChange={(e) => setCheckDate(e.target.value)}
-                  className="input-field bg-slate-50 font-bold rounded-xl text-xs py-2 px-3 border-slate-200"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-black uppercase text-slate-600 mb-1">
-                  👤 Officer Name
-                </label>
-                <input
-                  type="text"
-                  list="checkingOfficialList"
-                  value={officerName}
-                  onChange={(e) => setOfficerName(e.target.value)}
-                  className="input-field bg-slate-50 font-bold text-xs rounded-xl py-2 px-3 border-slate-200"
-                  placeholder="Officer"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setIsExpanded(false)}
-                className="btn bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-[11px] uppercase px-4 py-2 rounded-xl"
-              >
-                Close
-              </button>
-              <button
-                type="submit"
-                className="btn bg-[#1A365D] hover:bg-black text-white font-black text-[11px] uppercase px-5 py-2 rounded-xl shadow-xs"
-              >
-                Save
-              </button>
-            </div>
-          </form>
-        </motion.div>
-      )}
-    </div>
-  );
-};
-
-/* --- DETAILED CHECKING ROW COMPONENT --- */
-const CheckingRow = ({
-  m,
-  h,
-  isCo,
-  currentUser,
-  cloudAuthUser,
-  isViewer,
-  showToast,
-  onCheckSubmitted,
-  onCheckUpdated,
-  onCheckRemoved,
-  records,
-  syncMaster,
-  masterData
-}: CheckingRowProps): React.JSX.Element => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [verificationType, setVerificationType] = useState<'CO_LTD' | 'OTHERS'>(() => h ? h.type : (isCo ? 'CO_LTD' : 'OTHERS'));
-  
-  const pNo = h ? h.passport : (m?.p || '');
-  const name = h ? h.fullname : (m?.n || '');
-  const nat = h ? h.nationality : (m?.nat || '');
-  const loc = h ? h.originalAddress : (m?.loc || '');
-  const start = h ? '' : (m?.start || '');
-  const end = h ? '' : (m?.end || '');
-  const allowed = h ? '' : (m?.allowed || '');
-
-  const [coStatus, setCoStatus] = useState<PermitStatus>(() => {
-    if (h) return h.status as any;
-    return 'နေထိုင်ခွင့်ကျထားသောသူ';
-  });
-  
-  // Prefill permittedBy from past records of this guest and map status
-  const defaultPermittedBy = useMemo(() => {
-    if (h) return h.permittedBy || '';
-    const matched = records.filter(r => r.passport.toUpperCase() === pNo.toUpperCase())
-      .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
-    return matched[0]?.permittedBy || '';
-  }, [records, pNo, h]);
-
-  const [permittedBy, setPermittedBy] = useState(defaultPermittedBy);
-  const [prevPassport, setPrevPassport] = useState(() => (h as any)?.previousPassport || (m as any)?.previousPassport || "");
-  const [dualRemarks, setDualRemarks] = useState(() => (h as any)?.dualPassportRemarks || (m as any)?.dualPassportRemarks || "");
-  const [confirmedAddress, setConfirmedAddress] = useState(() => h ? h.confirmedAddress : loc);
-  const [confirmedStayDescription, setConfirmedStayDescription] = useState(() => {
-    if (h) return h.confirmedStayDescription || '';
-    const masterMatch = masterData?.find(x => x.type === 'Stay' && x.name.toLowerCase() === loc.toLowerCase());
-    if (masterMatch?.linkedValue) return masterMatch.linkedValue;
-    const recMatch = records.find(r => r.address?.toLowerCase() === loc.toLowerCase() && r.stayDescription);
-    return recMatch?.stayDescription || '';
-  });
-  const [checkDate, setCheckDate] = useState(() => h ? h.checkDate : new Date().toISOString().split('T')[0]);
-  const [officerName, setOfficerName] = useState(() => h ? h.officerName : (currentUser?.name || localStorage.getItem('lastCheckedOfficerName') || ''));
-  const [officerTitle, setOfficerTitle] = useState(() => h ? h.officerTitle : (currentUser?.title || localStorage.getItem('lastCheckedOfficerTitle') || 'Officer'));
-
-  // Sync with currentUser if they just logged in
-  useEffect(() => {
-    if (currentUser && !h) {
-      setOfficerName(currentUser.name);
-      setOfficerTitle(currentUser.title);
-    }
-  }, [currentUser, h]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isViewer) {
-      if (showToast) showToast("🔒 Viewer level ဖြစ်သောကြောင့် Stay Verification သစ် ဖြည့်သွင်း/ပြင်ဆင်၍မရပါ");
-      return;
-    }
-    if (!coStatus) return;
-
-    // Cache typed officer in localStorage for future convenience if not logged in
-    if (!currentUser) {
-      if (officerName) localStorage.setItem('lastCheckedOfficerName', officerName);
-      if (officerTitle) localStorage.setItem('lastCheckedOfficerTitle', officerTitle);
-    }
-
-    // Auto save the permit description to Master Data (as per requirement) so it becomes reusable
-    if (coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' && permittedBy.trim() && syncMaster) {
-      syncMaster(permittedBy.trim(), 'PermitDescription');
-    }
-
-    // Auto save / contribute the stay location address & description to Master Data
-    if (confirmedAddress.trim() && syncMaster) {
-      syncMaster(confirmedAddress.trim(), 'Stay', confirmedStayDescription);
-    }
-
-    // Auto contribute checking officer and title to master data as well
-    if (officerName.trim() && syncMaster) {
-      syncMaster(officerName.trim(), 'Official');
-    }
-    if (officerTitle.trim() && syncMaster) {
-      syncMaster(officerTitle.trim(), 'Title');
-    }
-
-    if (h) {
-      // Editing existing log
-      const updatedCheck: CheckingHistoryEntry = {
-        ...h,
-        confirmedAddress,
-        confirmedStayDescription,
-        status: coStatus as any,
-        permittedBy: (coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' || coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ') ? permittedBy : '',
-        officerName: officerName || 'System Officer',
-        officerTitle: officerTitle || 'Officer',
-        checkDate,
-        type: verificationType,
-      };
-      if (onCheckUpdated) onCheckUpdated(updatedCheck);
-    } else {
-      // Create new verification entry
-      const newCheck: CheckingHistoryEntry = {
-        id: Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9),
-        passport: pNo.toUpperCase(),
-        fullname: name,
-        nationality: nat,
-        type: verificationType,
-        checkDate,
-        originalAddress: loc,
-        confirmedAddress: confirmedAddress,
-        confirmedStayDescription: confirmedStayDescription,
-        status: coStatus as any,
-        permittedBy: (coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' || coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ') ? permittedBy : '',
-        officerName: officerName || 'System Officer',
-        officerTitle: officerTitle || 'Officer',
-        previousPassport: prevPassport ? prevPassport.toUpperCase().trim() : undefined,
-        dualPassportRemarks: dualRemarks ? dualRemarks.trim() : undefined,
-        linkedPassports: prevPassport ? Array.from(new Set([pNo.toUpperCase(), prevPassport.toUpperCase().trim()])) : undefined,
-        timestamp: new Date().toISOString()
-      };
-      onCheckSubmitted(newCheck);
-    }
-    setIsExpanded(false);
-  };
-
-  return (
-    <>
-      <tr className={`hover:bg-slate-50/50 transition-all border-b border-gray-100 ${h ? 'bg-emerald-50/10' : 'bg-amber-50/5'}`}>
-        <td className="p-4 align-middle">
-          {h ? (
-            h.type === 'CO_LTD' ? (
-              <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-300 px-2.5 py-1 rounded-full font-black uppercase tracking-wider block w-fit">
-                ✅ Corp. Checked
-              </span>
-            ) : (
-              <span className="text-[9px] bg-teal-100 text-teal-800 border border-teal-200 px-2.5 py-1 rounded-full font-black uppercase tracking-wider block w-fit">
-                ✅ Std. Checked
-              </span>
-            )
-          ) : (
-            verificationType === 'CO_LTD' ? (
-              <span className="text-[9px] bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-1 rounded-full font-black uppercase tracking-wider block w-fit animate-pulse">
-                ⏳ Corp. Pending
-              </span>
-            ) : (
-              <span className="text-[9px] bg-indigo-50 text-indigo-800 border border-indigo-200 px-2.5 py-1 rounded-full font-black uppercase tracking-wider block w-fit animate-pulse">
-                ⏳ Std. Pending
-              </span>
-            )
-          )}
-        </td>
-        <td className="p-4 align-middle">
-          <div className="font-extrabold text-[#1A365D] tracking-tight text-sm font-mono flex items-center gap-1.5 leading-none">
-            {pNo}
-          </div>
-          <div className="text-[11px] font-black text-slate-500 uppercase mt-1 tracking-wide">{name}</div>
-        </td>
-        <td className="p-4 align-middle font-black text-slate-700 uppercase">{nat}</td>
-        <td className="p-4 align-middle leading-tight">
-          <div className="font-extrabold text-slate-900 text-[11px]">{confirmedAddress}</div>
-          {confirmedStayDescription && (
-            <div className="text-[9px] text-gray-500 font-mono mt-1 italic">
-              🏡 Detail: {confirmedStayDescription}
-            </div>
-          )}
-        </td>
-        <td className="p-4 align-middle">
-          {h ? (
-            <>
-              <div className="mb-1">
-                {coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' ? (
-                  <span className="text-[9px] font-black uppercase text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
-                    STAY PERMITTED
-                  </span>
-                ) : coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ' ? (
-                  <span className="text-[9px] font-black uppercase text-rose-800 bg-rose-50 border border-rose-200 rounded px-1.5 py-0.5">
-                    STAY NOT PERMITTED
-                  </span>
-                ) : (
-                  <span className="text-[9px] font-black uppercase text-blue-800 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
-                    STILL CONFIRMED
-                  </span>
-                )}
-              </div>
-              {permittedBy && (
-                <div className="text-[9px] text-indigo-900 font-black tracking-tight mt-0.5">
-                  Desc: <span className="text-purple-700">{permittedBy}</span>
-                </div>
-              )}
-            </>
-          ) : (
-            <span className="text-[10px] bg-amber-50 text-amber-700 font-extrabold rounded border border-amber-200 px-1.5 py-0.5">
-              ⚠️ Awaiting Verification
-            </span>
-          )}
-        </td>
-        <td className="p-4 align-middle text-xs text-slate-700">
-          {h ? (
-            <div className="leading-normal">
-              <div className="font-extrabold text-indigo-950 flex items-center gap-1">
-                <Calendar size={12} className="text-indigo-400" />
-                Checked: {checkDate}
-              </div>
-              <div className="text-[9px] text-slate-400 font-mono font-bold mt-0.5">
-                Officer: {officerTitle} {officerName}
-              </div>
-            </div>
-          ) : (
-            <div className="leading-normal font-mono text-[10px]">
-              <div className="text-gray-400">Exp Stay To:</div>
-              <div className="font-extrabold text-[#1A365D]">{end || 'N/A'}</div>
-              <div className="text-[8px] font-bold text-amber-600 mt-0.5 uppercase">
-                ({getLiveRemainingDays(end)})
-              </div>
-            </div>
-          )}
-        </td>
-        <td className="p-4 align-middle text-right grid grid-cols-1 gap-1 min-w-[120px]">
-          {h ? (
-            <div className="flex justify-end gap-1.5">
-              <button
-                onClick={() => setIsExpanded(!isExpanded)}
-                className={`text-[8.5px] font-black uppercase px-2.5 py-1.5 rounded-lg border transition-all ${
-                  isExpanded
-                    ? 'bg-slate-100 border-slate-300 text-slate-600'
-                    : 'bg-orange-55 text-orange-900 border-orange-200 hover:bg-orange-100 hover:text-orange-950'
-                }`}
-              >
-                {isExpanded ? 'Cancel' : 'Edit Details'}
-              </button>
-              {onCheckRemoved && (
-                <button
-                  onClick={() => onCheckRemoved(h.id, h.passport)}
-                  className="text-[8.5px] font-black uppercase text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-1.5 rounded-lg hover:bg-rose-100 hover:border-rose-300 transition-all"
-                  title="Undo check verification and re-queue"
-                >
-                  Undo Log
-                </button>
-              )}
-            </div>
-          ) : (
-            <button
-              onClick={() => setIsExpanded(!isExpanded)}
-              className={`text-[9px] font-black uppercase px-4 py-2 rounded-xl transition-all shadow-xs w-full text-center ${
-                isExpanded 
-                  ? 'bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200' 
-                  : (verificationType === 'CO_LTD')
-                  ? 'bg-amber-600 text-white hover:bg-amber-700 hover:shadow-sm'
-                  : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-sm'
-              }`}
-            >
-              {isExpanded ? 'Close' : 'Verify Physical'}
-            </button>
-          )}
-        </td>
-      </tr>
-      
-      {isExpanded && (
-        <tr className="bg-slate-50/50">
-          <td colSpan={7} className="p-0 border-b border-slate-100 shadow-inner">
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.2 }}
-              className="p-6 bg-white overflow-hidden"
-            >
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="flex items-center justify-between border-b pb-2">
-                  <span className="text-xs uppercase font-black text-slate-800 flex items-center gap-2">
-                    <span className={`px-2 py-0.5 rounded text-[9px] font-black border ${
-                      h 
-                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300' 
-                        : (verificationType === 'CO_LTD')
-                        ? 'bg-amber-50 text-amber-800 border-amber-200' 
-                        : 'bg-indigo-50 text-indigo-800 border-indigo-200'
-                    }`}>
-                      {h ? 'EDIT VERIFICATION DETAILED DIALOG' : (verificationType === 'CO_LTD') ? 'CO LTD VERIFICATION CHECK' : 'STANDARD STAY CHECK'}
-                    </span>
-                    Stay verification ledger update for passport: <span className="font-mono text-purple-700 font-black">{pNo}</span> ({name})
-                  </span>
-                  {!h && <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Stay Schedule: {start} to {end}</span>}
-                </div>
-
-                {/* Live Category Selector */}
-                <div className="bg-slate-50 border border-slate-200/60 p-4 rounded-xl">
-                  <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-2">
-                    🏢 Live Classification / Class Verification (နေထိုင်မှု စစ်ဆေးသည့် အမျိုးအစား ရွေးချယ်ရန်)
-                  </label>
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-xl border-2 cursor-pointer text-[11px] font-black tracking-wide transition-all ${
-                      verificationType === 'CO_LTD'
-                        ? 'border-amber-500 bg-amber-50 text-amber-900 shadow-xs'
-                        : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
-                    }`}>
-                      <input
-                        type="radio"
-                        name={`verificationType-${pNo}`}
-                        value="CO_LTD"
-                        checked={verificationType === 'CO_LTD'}
-                        onChange={() => {
-                          setVerificationType('CO_LTD');
-                          setCoStatus('နေထိုင်ခွင့်ကျထားသောသူ'); // set suitable default
-                        }}
-                        className="sr-only"
-                      />
-                      🏢 CORPORATE CO. LTD. (ကုမ္ပဏီ နေထိုင်သူ)
-                    </label>
-                    <label className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-xl border-2 cursor-pointer text-[11px] font-black tracking-wide transition-all ${
-                      verificationType === 'OTHERS'
-                        ? 'border-indigo-500 bg-indigo-50 text-indigo-900 shadow-xs'
-                        : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
-                    }`}>
-                      <input
-                        type="radio"
-                        name={`verificationType-${pNo}`}
-                        value="OTHERS"
-                        checked={verificationType === 'OTHERS'}
-                        onChange={() => {
-                          setVerificationType('OTHERS');
-                          setCoStatus('နေထိုင်ခွင့်ကျထားသောသူ'); // set suitable default
-                        }}
-                        className="sr-only"
-                      />
-                      🏨 STANDARD / HOTEL STAY (ဟိုတယ်/တည်းခိုခန်း နေထိုင်သူ)
-                    </label>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                  {/* Left Form: Status Inputs */}
-                  <div className="space-y-4">
-                    {verificationType === 'CO_LTD' ? (
-                      <>
-                        <div>
-                          <label className="block text-[10px] font-black uppercase text-amber-900 tracking-wider mb-1.5 rounded bg-amber-50/70 px-2.5 py-1 w-fit border border-amber-200">
-                            🏡 Confirm/Update Corporate Stay Address (ကုမ္ပဏီ နေထိုင်ရာလိပ်စာ)
-                          </label>
-                          <input
-                            type="text"
-                            value={confirmedAddress}
-                            list="checkingStayList"
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              const match = masterData?.find(m => m.type === 'Stay' && m.name.toLowerCase() === val.toLowerCase());
-                              setConfirmedAddress(val);
-                              setConfirmedStayDescription(match ? (match.linkedValue || '') : confirmedStayDescription);
-                            }}
-                            className="input-field bg-white border-amber-300 text-xs font-bold focus:ring-amber-500 rounded-lg"
-                            placeholder="Enter / confirm corporate address stay..."
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black uppercase text-amber-900 tracking-wider mb-1.5 rounded bg-amber-50/70 px-2.5 py-1 w-fit border border-amber-200">
-                            🏡 Detail Address / Stay Description (လိပ်စာအသေးစိတ်)
-                          </label>
-                          <input
-                            type="text"
-                            value={confirmedStayDescription}
-                            list="checkingStayDescList"
-                            onChange={(e) => setConfirmedStayDescription(e.target.value)}
-                            className="input-field bg-white border-amber-300 text-xs font-bold focus:ring-amber-500 rounded-lg"
-                            placeholder="Detail stay address or description..."
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black uppercase text-amber-900 tracking-wider mb-1.5 rounded bg-amber-50/70 px-2.5 py-1 w-fit border border-amber-200">
-                            🟢 Corporate Permit Status (ခွင့်ပြုချက် အခြေအနေ)
-                          </label>
-                          <select
-                            value={coStatus}
-                            onChange={(e) => {
-                              const newStatus = e.target.value as any;
-                              setCoStatus(newStatus);
-                              const hist = records.filter(r => r.passport.toUpperCase() === pNo.toUpperCase() && (r.stillPermittedStatus === newStatus || (newStatus === 'STAY PERMITTED' && r.stillPermittedStatus === 'STILL PERMITTED')))
-                                .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp))[0];
-                              setPermittedBy(hist?.permittedBy || '');
-                            }}
-                            className="input-field bg-white border-amber-300 font-black text-[11px] uppercase text-amber-800 focus:ring-amber-500 rounded-lg"
-                            required
-                          >
-                            <option value="STAY PERMITTED">STAY PERMITTED (ခွင့်ပြုထားဆဲ - သီးခြားနေထိုင်ခွင့်ပြုသူ)</option>
-                            <option value="STAY NOT PERMITTED">STAY NOT PERMITTED (ခွင့်မပြုသေးပါ)</option>
-                          </select>
-                        </div>
-                        {coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' && (
-                          <div className="animate-in slide-in-from-top-1 duration-200">
-                            <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
-                              📝 PERMIT DESCRIPTION (ခွင့်ပြုချက် အကြောင်းအရာ)
-                            </label>
-                            <input
-                              type="text"
-                              value={permittedBy}
-                              list="checkingPermitDescriptionList"
-                              onChange={(e) => setPermittedBy(e.target.value)}
-                              className="input-field bg-white focus:ring-amber-500 border-slate-200 font-bold rounded-lg text-xs"
-                              placeholder="e.g. Approved sponsor, MD certified, Stay extension granted..."
-                              required={coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ'}
-                            />
-                          </div>
-                        )}
-                        {coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ' && (
-                          <div className="animate-in slide-in-from-top-1 duration-200">
-                            <label className="block text-[10px] font-black uppercase text-red-900 tracking-wider mb-1.5">
-                              📝 NOT PERMIT DESCRIPTION (ခွင့်မပြုသည့်အကြောင်းအရာ)
-                            </label>
-                            <input
-                              type="text"
-                              value={permittedBy}
-                              onChange={(e) => setPermittedBy(e.target.value)}
-                              className="input-field bg-white border-red-200/60 font-bold text-red-800 rounded-lg text-xs"
-                              placeholder="Not Permitted reason (ခွင့်မပြုသည့်အကြောင်းအရာ)..."
-                            />
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <div>
-                          <label className="block text-[10px] font-black uppercase text-indigo-900 tracking-wider mb-1.5 rounded bg-indigo-50 px-2.5 py-1 w-fit border border-indigo-200">
-                            🏡 Confirm Stay Address Location (အတည်ပြုနေထိုင်ရာလိပ်စာ)
-                          </label>
-                          <input
-                            type="text"
-                            value={confirmedAddress}
-                            list="checkingStayList"
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              const match = masterData?.find(m => m.type === 'Stay' && m.name.toLowerCase() === val.toLowerCase());
-                              setConfirmedAddress(val);
-                              setConfirmedStayDescription(match ? (match.linkedValue || '') : confirmedStayDescription);
-                            }}
-                            className="input-field bg-white border-slate-200 text-xs font-bold focus:ring-indigo-500 rounded-lg"
-                            placeholder="Enter / confirm local address stay..."
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black uppercase text-indigo-900 tracking-wider mb-1.5 rounded bg-indigo-50 px-2.5 py-1 w-fit border border-indigo-200">
-                            🏡 Detail Address / Stay Description (လိပ်စာအသေးစိတ်)
-                          </label>
-                          <input
-                            type="text"
-                            value={confirmedStayDescription}
-                            list="checkingStayDescList"
-                            onChange={(e) => setConfirmedStayDescription(e.target.value)}
-                            className="input-field bg-white border-slate-200 text-xs font-bold focus:ring-indigo-500 rounded-lg pb-1 bg-indigo-50/10"
-                            placeholder="Detail stay address or description..."
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black uppercase text-indigo-900 tracking-wider mb-1.5 rounded bg-indigo-50 px-2.5 py-1 w-fit border border-indigo-200">
-                            🟢 Assigned Verification Status (ခွင့်ပြုချက် အခြေအနေ)
-                          </label>
-                          <select
-                            value={coStatus}
-                            onChange={(e) => {
-                              const newStatus = e.target.value as any;
-                              setCoStatus(newStatus);
-                              const hist = records.filter(r => r.passport.toUpperCase() === pNo.toUpperCase() && (r.stillPermittedStatus === newStatus || (newStatus === 'STAY PERMITTED' && r.stillPermittedStatus === 'STILL PERMITTED')))
-                                .sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp))[0];
-                              setPermittedBy(hist?.permittedBy || '');
-                            }}
-                            className="input-field bg-white border-slate-200 font-black text-[11px] uppercase text-indigo-800 focus:ring-indigo-500 rounded-lg"
-                            required
-                          >
-                            <option value="STAY PERMITTED">STAY PERMITTED (ခွင့်ပြုထားဆဲ - သီးခြားနေထိုင်ခွင့်ပြုသူ)</option>
-                            <option value="STAY NOT PERMITTED">STAY NOT PERMITTED (ခွင့်မပြုသေးပါ)</option>
-                          </select>
-                        </div>
-                        {coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ' && (
-                          <div className="animate-in slide-in-from-top-1 duration-200">
-                            <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
-                              📝 PERMIT DESCRIPTION (ခွင့်ပြုချက် အကြောင်းအရာ)
-                            </label>
-                            <input
-                              type="text"
-                              value={permittedBy}
-                              list="checkingPermitDescriptionList"
-                              onChange={(e) => setPermittedBy(e.target.value)}
-                              className="input-field bg-white focus:ring-indigo-500 border-slate-200 font-bold rounded-lg text-xs"
-                              placeholder="e.g. Approved sponsor, MD certified, Stay extension granted..."
-                              required={coStatus === 'နေထိုင်ခွင့်ကျထားသောသူ'}
-                            />
-                          </div>
-                        )}
-                        {coStatus === 'နေထိုင်ခွင့် မလျှောက်ထားသေးသူ' && (
-                          <div className="animate-in slide-in-from-top-1 duration-200">
-                            <label className="block text-[10px] font-black uppercase text-red-900 tracking-wider mb-1.5">
-                              📝 NOT PERMIT DESCRIPTION (ခွင့်မပြုသည့်အကြောင်းအရာ)
-                            </label>
-                            <input
-                              type="text"
-                              value={permittedBy}
-                              onChange={(e) => setPermittedBy(e.target.value)}
-                              className="input-field bg-white border-red-200/60 font-bold text-red-800 rounded-lg text-xs"
-                              placeholder="Not Permitted reason (ခွင့်မပြုသည့်အကြောင်းအရာ)..."
-                            />
-                          </div>
-                        )}
-
-                        {/* Dual / Previous Passport in Checking Row */}
-                        <div className="p-3 bg-purple-50/60 border border-purple-200/80 rounded-xl space-y-2">
-                          <label className="text-[10px] font-black uppercase text-purple-900 flex items-center gap-1">
-                            <Link2 size={12} className="text-purple-600" />
-                            🔗 Linked / Previous Passport (ယခင် Passport နံပါတ်ဟောင်း)
-                          </label>
-                          <input
-                            type="text"
-                            value={prevPassport}
-                            onChange={(e) => setPrevPassport(e.target.value.toUpperCase())}
-                            className="input-field bg-white font-mono font-bold text-xs uppercase rounded-lg py-1.5 px-2.5 border-purple-200 text-purple-950"
-                            placeholder="OLD PASSPORT NO."
-                          />
-                          <input
-                            type="text"
-                            value={dualRemarks}
-                            onChange={(e) => setDualRemarks(e.target.value)}
-                            className="input-field bg-white font-medium text-xs rounded-lg py-1.5 px-2.5 border-purple-200 text-slate-800"
-                            placeholder="Dual Passport Remarks / မှတ်ချက်..."
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Right Form: Date Picker & Responsible Officer */}
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-[10px] font-black uppercase text-slate-500 tracking-wider mb-1.5">
-                        📅 Check Date Log (စစ်ဆေးသည့် ရက်စွဲ)
-                      </label>
-                      <input
-                        type="date"
-                        value={checkDate}
-                        onChange={(e) => setCheckDate(e.target.value)}
-                        className="input-field bg-white border-slate-200 font-bold rounded-lg text-xs"
-                        required
-                      />
-                    </div>
-
-                    <div className="p-4 bg-slate-50 border border-slate-200/60 space-y-3 rounded-2xl">
-                      <span className="text-[9px] font-black uppercase text-indigo-900 flex items-center gap-1 bg-indigo-50 px-2 py-0.5 border border-indigo-200 rounded w-fit">
-                        👤 Responsible Checker Officer (စစ်ဆေးသူ အရာရှိ)
-                      </span>
-                      <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div>
-                          <label className="input-label text-purple-850 font-black">Official Name (စာရင်းသွင်းသူ)</label>
-                          <input
-                            type="text"
-                            list="checkingOfficialList"
-                            value={officerName}
-                            onChange={(e) => setOfficerName(e.target.value)}
-                            className="input-field bg-white border-slate-200 text-gray-900 font-bold"
-                            placeholder="Officer Name"
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="input-label text-purple-850 font-black">Official Title (ရာထူး)</label>
-                          <input
-                            type="text"
-                            list="checkingTitleList"
-                            value={officerTitle}
-                            onChange={(e) => setOfficerTitle(e.target.value)}
-                            className="input-field bg-white border-slate-200 text-gray-900 font-bold"
-                            placeholder="Title"
-                            required
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-3 border-t pt-4 mt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsExpanded(false)}
-                    className="btn bg-gray-100 text-gray-600 hover:bg-gray-200 font-bold text-[10px] uppercase px-5 py-2.5 rounded-xl"
-                  >
-                    Close
-                  </button>
-                  <button
-                    type="submit"
-                    className="btn bg-[#1A365D] hover:bg-black text-white font-black text-[10px] uppercase px-6 py-2.5 rounded-xl shadow-md"
-                  >
-                    {h ? 'Save Log Changes' : 'Confirm Stay Verification & Move to Checked'}
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          </td>
-        </tr>
-      )}
-    </>
-  );
-};
-
-/* --- CHECKING PANEL COMPONENT --- */
-interface CheckingOptionProps {
-  records: ImmRecord[];
-  tempRecords: ImmRecord[];
-  setRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
-  setTempRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
-  showToast: (msg: string) => void;
-  movementMap: Record<string, MovementData>;
-  currentUser?: { name: string; title: string } | null;
-  cloudAuthUser?: CloudAuthUser | null;
-  isViewer?: boolean;
-  passportToLatestInfo: Record<string, { fullname: string; nationality: string; gender: string }>;
-  setCheckingPrintData: React.Dispatch<React.SetStateAction<{
-    title: string;
-    type: 'CO_LTD_PENDING' | 'OTHERS_PENDING' | 'CHECKED_HISTORY';
-    data: any[];
-  } | null>>;
-  masterData: MasterItem[];
-  syncMaster: (value: string, type: MasterItem['type'], linkedValue?: string) => void;
-  setActivePrintPreview: React.Dispatch<React.SetStateAction<any>>;
-  checkingHistory: CheckingHistoryEntry[];
-  setCheckingHistory: React.Dispatch<React.SetStateAction<CheckingHistoryEntry[]>>;
-}
-
-const CheckingOption = ({
-  records,
-  tempRecords,
-  setRecords,
-  setTempRecords,
-  showToast,
-  movementMap,
-  currentUser,
-  cloudAuthUser,
-  isViewer,
-  passportToLatestInfo,
-  setCheckingPrintData,
-  masterData,
-  syncMaster,
-  setActivePrintPreview,
-  checkingHistory,
-  setCheckingHistory
-}: CheckingOptionProps) => {
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const isCoLtdAddress = (addressStr: string) => {
-    const clean = (addressStr || '').toUpperCase();
-    return clean.includes('CO') && (clean.includes('LTD') || clean.includes('L.T.D'));
-  };
-
-  // Derive checklists from active stay-in visitors (movementMap)
-  const { coLtdToCheckList, othersToCheckList } = useMemo(() => {
-    const checkedPassports = new Set(checkingHistory.map(h => h.passport.toUpperCase()));
-    const coLtd: any[] = [];
-    const others: any[] = [];
-    (Object.values(movementMap) as MovementData[]).filter(m => !m.out).forEach(m => {
-      if (checkedPassports.has(m.p.toUpperCase())) return;
-      const isCo = isCoLtdAddress(m.loc);
-      if (isCo) {
-        coLtd.push(m);
-      } else {
-        others.push(m);
-      }
-    });
-    return { coLtdToCheckList: coLtd, othersToCheckList: others };
-  }, [movementMap, checkingHistory]);
-
-  const coLtdCheckedList = useMemo(() => {
-    return checkingHistory.filter(h => h.type === 'CO_LTD');
-  }, [checkingHistory]);
-
-  const othersCheckedList = useMemo(() => {
-    return checkingHistory.filter(h => h.type !== 'CO_LTD');
-  }, [checkingHistory]);
-
-  // Helper helper to update records & tempRecords
-  const updateStatusInRecords = (passport: string, status: string, permittedBy: string, confirmedAddress: string, confirmedStayDescription: string = '') => {
-    const applyUpdate = (r: ImmRecord) => {
-      const mappedStatus = status === 'STILL PERMITTED' ? 'STAY PERMITTED' : (status === 'STILL NOT PERMITTED YET' ? 'STAY NOT PERMITTED' : status);
-      return {
-        ...r,
-        stillPermittedStatus: mappedStatus,
-        permittedBy: permittedBy,
-        address: confirmedAddress ? confirmedAddress : r.address,
-        stayDescription: confirmedStayDescription !== undefined ? confirmedStayDescription : r.stayDescription
-      };
-    };
-
-    setRecords((prev: ImmRecord[]) => {
-      return prev.map(r => r.passport.toUpperCase() === passport.toUpperCase() ? applyUpdate(r) : r);
-    });
-
-    setTempRecords((prev: ImmRecord[]) => {
-      return prev.map(r => r.passport.toUpperCase() === passport.toUpperCase() ? applyUpdate(r) : r);
-    });
-  };
-
-  // Submits a verified check and persists it
-  const handleCheckSubmitted = (newCheck: CheckingHistoryEntry) => {
-    setCheckingHistory(prev => [newCheck, ...prev]);
-    updateStatusInRecords(
-      newCheck.passport, 
-      newCheck.status, 
-      newCheck.permittedBy || '', 
-      newCheck.confirmedAddress, 
-      newCheck.confirmedStayDescription || ''
-    );
-    logActivity({
-      action: 'CREATE',
-      module: 'CHECKING',
-      officerName: newCheck.officerName || cloudAuthUser?.username,
-      officerRole: cloudAuthUser?.role || 'Editor',
-      targetId: newCheck.passport,
-      details: `Stay Verification logged for Passport ${newCheck.passport} (${newCheck.fullname || 'N/A'}, ${newCheck.nationality || 'N/A'}): ${newCheck.status} by ${newCheck.permittedBy || '-'}`
-    });
-    showToast(`VERIFIED CHECK LOGGED SUCCESS FOR ${newCheck.passport}`);
-  };
-
-  // Updates an edited verified check
-  const handleCheckUpdated = (updatedCheck: CheckingHistoryEntry) => {
-    setCheckingHistory(prev => prev.map(c => c.id === updatedCheck.id ? updatedCheck : c));
-    updateStatusInRecords(
-      updatedCheck.passport,
-      updatedCheck.status,
-      updatedCheck.permittedBy || '',
-      updatedCheck.confirmedAddress,
-      updatedCheck.confirmedStayDescription || ''
-    );
-    logActivity({
-      action: 'UPDATE',
-      module: 'CHECKING',
-      officerName: updatedCheck.officerName || cloudAuthUser?.username,
-      officerRole: cloudAuthUser?.role || 'Editor',
-      targetId: updatedCheck.passport,
-      details: `Stay Verification updated for Passport ${updatedCheck.passport} (${updatedCheck.fullname || 'N/A'}): ${updatedCheck.status} by ${updatedCheck.permittedBy || '-'}`
-    });
-    showToast(`UPDATED VERIFIED STAY LOG FOR ${updatedCheck.passport}`);
-  };
-
-  // Reverts check log, returns candidate back to check queue
-  const removeCheckLog = (id: string, passport: string) => {
-    setCheckingHistory(prev => prev.filter(c => c.id !== id));
-    updateStatusInRecords(passport, '', '', '');
-    logActivity({
-      action: 'DELETE',
-      module: 'CHECKING',
-      officerName: cloudAuthUser?.username,
-      officerRole: cloudAuthUser?.role || 'Editor',
-      targetId: passport,
-      details: `Reverted verification check log for Passport ${passport} back to pending queue`
-    });
-    showToast("CHECK LOG REVERTED AND VISITOR RE-QUEUED FOR CHECKING");
-  };
-
-  // Consolidate PENDING (to check) and CHECKED list into a single unified directory array
-  const masterCheckingList = useMemo(() => {
-    const list: any[] = [];
-    
-    // 1. Unchecked Corporate
-    coLtdToCheckList.forEach(m => {
-      const info = passportToLatestInfo[m.p.toUpperCase()] || { fullname: m.n, nationality: m.nat };
-      list.push({
-        type: 'PENDING',
-        category: 'CO_LTD',
-        isCo: true,
-        passport: m.p,
-        fullname: info.fullname,
-        nationality: info.nationality,
-        originalAddress: m.loc,
-        confirmedAddress: m.loc,
-        checkDate: '',
-        status: '',
-        permittedBy: '',
-        rawMovement: m,
-      });
-    });
-
-    // 2. Unchecked Standard Others
-    othersToCheckList.forEach(m => {
-      const info = passportToLatestInfo[m.p.toUpperCase()] || { fullname: m.n, nationality: m.nat };
-      list.push({
-        type: 'PENDING',
-        category: 'OTHERS',
-        isCo: false,
-        passport: m.p,
-        fullname: info.fullname,
-        nationality: info.nationality,
-        originalAddress: m.loc,
-        confirmedAddress: m.loc,
-        checkDate: '',
-        status: '',
-        permittedBy: '',
-        rawMovement: m,
-      });
-    });
-
-    // 3. Checked Corporate (CO LTD) history
-    coLtdCheckedList.forEach(h => {
-      list.push({
-        type: 'CHECKED',
-        category: 'CO_LTD',
-        isCo: true,
-        passport: h.passport,
-        fullname: h.fullname,
-        nationality: h.nationality,
-        originalAddress: h.originalAddress || h.confirmedAddress,
-        confirmedAddress: h.confirmedAddress,
-        confirmedStayDescription: h.confirmedStayDescription || '',
-        checkDate: h.checkDate,
-        status: h.status,
-        permittedBy: h.permittedBy || '',
-        officerName: h.officerName,
-        officerTitle: h.officerTitle,
-        rawHistory: h,
-      });
-    });
-
-    // 4. Checked Standard Others history
-    othersCheckedList.forEach(h => {
-      list.push({
-        type: 'CHECKED',
-        category: 'OTHERS',
-        isCo: false,
-        passport: h.passport,
-        fullname: h.fullname,
-        nationality: h.nationality,
-        originalAddress: h.originalAddress || h.confirmedAddress,
-        confirmedAddress: h.confirmedAddress,
-        confirmedStayDescription: h.confirmedStayDescription || '',
-        checkDate: h.checkDate,
-        status: h.status,
-        permittedBy: h.permittedBy || '',
-        officerName: h.officerName,
-        officerTitle: h.officerTitle,
-        rawHistory: h,
-      });
-    });
-
-    return list;
-  }, [coLtdToCheckList, othersToCheckList, coLtdCheckedList, othersCheckedList, passportToLatestInfo]);
-
-  // Unified directory master smart search box
-  const filteredMasterCheckingList = useMemo(() => {
-    if (!searchQuery.trim()) return masterCheckingList;
-    const q = searchQuery.toLowerCase();
-    return masterCheckingList.filter(item => {
-      const statusText = item.status ? item.status.toLowerCase() : 'awaiting pending';
-      const categoryText = item.category === 'CO_LTD' ? 'corporate co ltd hotel company' : 'standard others general guest';
-      const stateText = item.type === 'PENDING' ? 'pending unchecked queue' : 'checked verified completed';
-      const permittedByText = item.permittedBy ? item.permittedBy.toLowerCase() : '';
-      const officerText = item.officerName ? (item.officerName.toLowerCase() + ' ' + (item.officerTitle || '').toLowerCase()) : '';
-
-      return (
-        item.passport.toLowerCase().includes(q) ||
-        item.fullname.toLowerCase().includes(q) ||
-        item.nationality.toLowerCase().includes(q) ||
-        item.originalAddress.toLowerCase().includes(q) ||
-        item.confirmedAddress.toLowerCase().includes(q) ||
-        (item.confirmedStayDescription && item.confirmedStayDescription.toLowerCase().includes(q)) ||
-        statusText.includes(q) ||
-        categoryText.includes(q) ||
-        stateText.includes(q) ||
-        permittedByText.includes(q) ||
-        officerText.includes(q)
-      );
-    });
-  }, [masterCheckingList, searchQuery]);
-
-  // Performs Excel generation over multiple sheets for maximum data completeness (as per user demand)
-  const exportCheckingToExcel = () => {
-    try {
-      const checkedSheetData = checkingHistory.map((h, i) => {
-        const info = passportToLatestInfo[h.passport.toUpperCase()] || { fullname: h.fullname, nationality: h.nationality };
-        const m = (movementMap[h.passport.toUpperCase()] || {}) as Partial<MovementData>;
-        return {
-          "No": i + 1,
-          "Passport": h.passport,
-          "Full Name": info.fullname,
-          "Nationality": info.nationality,
-          "Visa Type": m.visa || '',
-          "Arrival Date": m.in || '',
-          "Expected Stay From": m.start || '',
-          "Expected Stay To": m.end || '',
-          "Allowed Days": m.allowed || '',
-          "Carrier Vehicle": m.vInfo || '',
-          "Agent / Brought By": m.agent || '',
-          "Contact Details": m.contact || '',
-          "Category": h.type === 'CO_LTD' ? 'CORPORATE (CO LTD)' : 'OTHERS',
-          "Verification Status": h.status === 'STILL PERMITTED' || h.status === 'STAY PERMITTED' ? 'STAY PERMITTED' : (h.status === 'STILL NOT PERMITTED YET' || h.status === 'STAY NOT PERMITTED' ? 'STAY NOT PERMITTED' : h.status),
-          "Permit Description": h.permittedBy || '',
-          "Confirmed Address": h.confirmedAddress,
-          "Confirmed Stay Detail": h.confirmedStayDescription || '',
-          "Checked Date": h.checkDate,
-          "Officer Title": h.officerTitle,
-          "Officer Name": h.officerName,
-          "Log Timestamp": new Date(h.timestamp).toLocaleString()
-        };
-      });
-
-      const corporateSheetData = coLtdToCheckList.map((m, i) => {
-        const info = passportToLatestInfo[m.p.toUpperCase()] || { fullname: m.n, nationality: m.nat };
-        return {
-          "No": i + 1,
-          "Passport": m.p,
-          "Full Name": info.fullname,
-          "Nationality": info.nationality,
-          "Visa Type": m.visa || '',
-          "Arrival Date": m.in || '',
-          "Active Stay Address": m.loc,
-          "Allowed Stay Days": m.allowed,
-          "Days Remaining": getLiveRemainingDays(m.end),
-          "Start Date": m.start,
-          "End Date": m.end,
-          "Carrier Vehicle": m.vInfo || '',
-          "Agent / Brought By": m.agent,
-          "Contact Details": m.contact
-        };
-      });
-
-      const othersSheetData = othersToCheckList.map((m, i) => {
-        const info = passportToLatestInfo[m.p.toUpperCase()] || { fullname: m.n, nationality: m.nat };
-        return {
-          "No": i + 1,
-          "Passport": m.p,
-          "Full Name": info.fullname,
-          "Nationality": info.nationality,
-          "Visa Type": m.visa || '',
-          "Arrival Date": m.in || '',
-          "Active Stay Address": m.loc,
-          "Allowed Stay Days": m.allowed,
-          "Days Remaining": getLiveRemainingDays(m.end),
-          "Start Date": m.start,
-          "End Date": m.end,
-          "Carrier Vehicle": m.vInfo || '',
-          "Agent / Brought By": m.agent,
-          "Contact Details": m.contact
-        };
-      });
-
-      const wb = XLSX.utils.book_new();
-      
-      const ws1 = XLSX.utils.json_to_sheet(checkedSheetData);
-      XLSX.utils.book_append_sheet(wb, ws1, "Checked History Logs");
-
-      const ws2 = XLSX.utils.json_to_sheet(corporateSheetData);
-      XLSX.utils.book_append_sheet(wb, ws2, "Corporate Checklist");
-
-      const ws3 = XLSX.utils.json_to_sheet(othersSheetData);
-      XLSX.utils.book_append_sheet(wb, ws3, "Others Checklist");
-
-      XLSX.writeFile(wb, `Checking_Verification_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
-      showToast("EXCEL VERIFICATION REPORT EXPORTED SUCCESSFULLY FOR ALL SHEETS!");
-    } catch (e) {
-      console.error(e);
-      showToast("FAILED TO EXPORT EXCEL REPORT");
-    }
-  };
-
-  const handlePrintReport = () => {
-    setActivePrintPreview({
-      title: 'Immigration Stay Physical Verification Directory & Checked Ledger',
-      type: 'CHECKED_HISTORY',
-      data: filteredMasterCheckingList
-    });
-    showToast("OPENING INTERACTIVE PRINT PREVIEW WITH MASTER FILTERED ENTRIES...");
-  };
-
-  return (
-    <div className="max-w-[1600px] mx-auto py-4 sm:py-8 px-2.5 sm:px-4 space-y-4 sm:space-y-6 animate-in fade-in duration-300">
-      {/* Dynamic Dashboard metrics header inside checking tab */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-4">
-        <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 border border-indigo-200/50 p-3 sm:p-4.5 rounded-2xl flex items-center justify-between">
-          <div className="space-y-0.5 sm:space-y-1">
-            <span className="text-[9px] sm:text-[10px] text-indigo-950 font-black uppercase tracking-wider">Total Ledger Size</span>
-            <div className="text-xl sm:text-2xl font-black text-indigo-950 font-mono">{masterCheckingList.length}</div>
-          </div>
-          <span className="text-lg sm:text-xl">📋</span>
-        </div>
-        <div className="bg-gradient-to-br from-amber-50 to-amber-100 border border-amber-200/50 p-3 sm:p-4.5 rounded-2xl flex items-center justify-between">
-          <div className="space-y-0.5 sm:space-y-1">
-            <span className="text-[9px] sm:text-[10px] text-amber-950 font-black uppercase tracking-wider">Pending Checks</span>
-            <div className="text-xl sm:text-2xl font-black text-amber-950 font-mono">
-              {coLtdToCheckList.length + othersToCheckList.length}
-            </div>
-          </div>
-          <span className="text-lg sm:text-xl animate-pulse">⏳</span>
-        </div>
-        <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 p-3 sm:p-4.5 rounded-2xl flex items-center justify-between">
-          <div className="space-y-0.5 sm:space-y-1">
-            <span className="text-[9px] sm:text-[10px] text-emerald-950 font-black uppercase tracking-wider">Corporate Verified</span>
-            <div className="text-xl sm:text-2xl font-black text-emerald-950 font-mono">{coLtdCheckedList.length}</div>
-          </div>
-          <span className="text-lg sm:text-xl">🏢</span>
-        </div>
-        <div className="bg-gradient-to-br from-teal-50 to-teal-100 border border-teal-200/50 p-3 sm:p-4.5 rounded-2xl flex items-center justify-between">
-          <div className="space-y-0.5 sm:space-y-1">
-            <span className="text-[9px] sm:text-[10px] text-teal-950 font-black uppercase tracking-wider">Standard Verified</span>
-            <div className="text-xl sm:text-2xl font-black text-teal-950 font-mono">{othersCheckedList.length}</div>
-          </div>
-          <span className="text-lg sm:text-xl">🏡</span>
-        </div>
-      </div>
-
-      <div className="card shadow-md border-t-4 sm:border-t-8 border-indigo-700 bg-white p-3.5 sm:p-6 no-print">
-        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 sm:gap-6">
-          <div className="flex items-center gap-3">
-             <div className="bg-indigo-100 p-2 sm:p-3 rounded-full text-indigo-700">
-                <CheckSquare size={22} className="sm:w-[26px] sm:h-[26px]" />
-             </div>
-             <div>
-                <h2 className="text-base sm:text-xl font-black text-gray-800 uppercase tracking-tight">Immigration Stay Checking Ledger</h2>
-                <p className="text-gray-400 text-[10px] sm:text-xs font-bold font-mono uppercase">Liaison and Physical verification operations board</p>
-             </div>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] sm:text-[11px] font-black text-emerald-800 bg-emerald-50 border border-emerald-200 uppercase px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl">
-              ● Unified Directory Active
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Checking Content list */}
-      <div className="card shadow-md border border-gray-100 bg-white p-3.5 sm:p-6">
-         <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-4 sm:mb-6">
-           <div>
-              <h3 className="text-sm sm:text-md font-black text-slate-900 uppercase">
-                📋 Unified Physical Stay Checklist & Verification Log History
-              </h3>
-              <p className="text-[11px] sm:text-xs text-slate-500 font-semibold mt-0.5">
-                Unified tracking table for Corporate (CO LTD) and Standard (OTHERS) stay lists. Fully searchable and editable logs.
-              </p>
-           </div>
-           
-           <div className="flex flex-col sm:flex-row flex-wrap items-center gap-2 w-full xl:w-auto">
-             <div className="relative w-full xl:w-80">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search Passport, Name, Nationality, Status, Address..."
-                  className="input-field pl-8.5 pr-4 text-xs bg-slate-50 border-slate-200 focus:bg-white rounded-xl font-medium py-2.5 sm:py-3"
-                />
-                <Search size={14} className="absolute left-3 top-3.5 sm:top-4 text-slate-400" />
-             </div>
-
-             <div className="flex items-center gap-2 w-full sm:w-auto">
-               <button
-                  onClick={exportCheckingToExcel}
-                  className="btn flex-1 sm:flex-none bg-emerald-600 text-white hover:bg-black text-[10px] font-black uppercase flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-3 rounded-xl shadow-xs transition-colors"
-                  title="Export full checking lists and history into a detailed multi-sheet workbook"
-               >
-                  <Download size={14} /> EXPORT EXCEL
-               </button>
-
-               <button
-                  onClick={handlePrintReport}
-                  className="btn flex-1 sm:flex-none bg-slate-800 text-white hover:bg-black text-[10px] font-black uppercase flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-3 rounded-xl shadow-sm transition-colors"
-                  title="Print the master verification checklist ledger"
-               >
-                  <Printer size={14} /> PRINT MASTER
-               </button>
-             </div>
-           </div>
-         </div>
-
-         {/* Mobile Card Layout (< md screens) */}
-         <div className="block md:hidden space-y-3 max-h-[600px] overflow-y-auto pr-0.5">
-           {filteredMasterCheckingList.length === 0 ? (
-             <div className="p-8 text-center text-slate-400 font-black uppercase tracking-wider text-xs bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-               ⚠️ No checking directory records match current search criteria
-             </div>
-           ) : (
-             filteredMasterCheckingList.map((item, idx) => (
-               <CheckingCard
-                 key={'m_card_' + item.passport + '_' + item.type + '_' + idx}
-                 m={item.type === 'PENDING' ? item.rawMovement : undefined}
-                 h={item.type === 'CHECKED' ? item.rawHistory : undefined}
-                 isCo={item.isCo}
-                 currentUser={currentUser}
-                 onCheckSubmitted={handleCheckSubmitted}
-                 onCheckUpdated={handleCheckUpdated}
-                 onCheckRemoved={removeCheckLog}
-                 records={records}
-                 syncMaster={syncMaster}
-                 masterData={masterData}
-               />
-             ))
-           )}
-         </div>
-
-         {/* Desktop Table Layout (>= md screens) */}
-         <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-xl max-h-[650px] overflow-y-auto shadow-xs">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-50 sticky top-0 border-b border-slate-200 z-10 font-bold">
-                <tr className="uppercase text-[9px] text-slate-500 font-black">
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200">Verification Status / Class</th>
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200">Foreigner Identifier</th>
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200">Nationality</th>
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200">Stay Address / Confirmed Stay</th>
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200">Verification Permit Status</th>
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200">Log / Duty Countdown</th>
-                  <th className="p-3.5 sm:p-4 border-b border-slate-200 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
-                {filteredMasterCheckingList.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="p-16 text-center text-slate-400 font-black uppercase tracking-wider leading-relaxed">
-                      ⚠️ No checking directory records match current search criteria
-                    </td>
-                  </tr>
-                ) : (
-                  filteredMasterCheckingList.map((item, idx) => (
-                    <CheckingRow 
-                      key={item.passport + '_' + item.type + '_' + idx}
-                      m={item.type === 'PENDING' ? item.rawMovement : undefined}
-                      h={item.type === 'CHECKED' ? item.rawHistory : undefined}
-                      isCo={item.isCo}
-                      currentUser={currentUser}
-                  cloudAuthUser={cloudAuthUser}
-                  isViewer={isViewer}
-                  showToast={showToast}
-                      onCheckSubmitted={handleCheckSubmitted}
-                      onCheckUpdated={handleCheckUpdated}
-                      onCheckRemoved={removeCheckLog}
-                      records={records}
-                      syncMaster={syncMaster}
-                      masterData={masterData}
-                    />
-                  ))
-                )}
-              </tbody>
-            </table>
-         </div>
-      </div>
-    </div>
-  );
-};
-
-/* --- LEGACY SECTION REMOVED FOR COMPILATION --- */
-
 const MasterDB = ({ 
   masterData, 
   setMasterData, 
@@ -3403,11 +1738,7 @@ const MasterDB = ({
   setSearchQuery,
   setActiveTab,
   setRecords,
-  setTempRecords,
-  handleManualSync,
-  handleFetchDataFromCloud,
-  records,
-  tempRecords
+  setTempRecords
 }: { 
   masterData: MasterItem[]; 
   setMasterData: React.Dispatch<React.SetStateAction<MasterItem[]>>; 
@@ -3418,39 +1749,12 @@ const MasterDB = ({
   setActiveTab: (t: string) => void;
   setRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
   setTempRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
-  handleManualSync: () => void;
-  handleFetchDataFromCloud: () => void;
-  records?: ImmRecord[];
-  tempRecords?: ImmRecord[];
 }) => {
   const [mName, setMName] = useState('');
   const [mType, setMType] = useState<MasterItem['type']>('Nationality');
   const [mSearch, setMSearch] = useState('');
   const [mLinked, setMLinked] = useState('');
   const [confirmMasterDeleteId, setConfirmMasterDeleteId] = useState<number | null>(null);
-  const [isMasterSyncing, setIsMasterSyncing] = useState(false);
-
-  const handleMasterDataUnifiedSync = async () => {
-    if (isMasterSyncing) return;
-    setIsMasterSyncing(true);
-    try {
-      showToast(" Cloud နှင့် Master Data Sync ပြုလုပ်နေပါသည် (Upload / Download)...");
-      // First, sync any local changes to cloud
-      if (typeof handleManualSync === 'function') {
-        await handleManualSync();
-      }
-      // Second, retrieve latest updates from cloud
-      if (typeof handleFetchDataFromCloud === 'function') {
-        await handleFetchDataFromCloud();
-      }
-      showToast(" Master Data Cloud Synchronization ပြီးစီးပါပြီ");
-    } catch (e: any) {
-      console.error("Unified Master Data Sync Error:", e);
-      showToast("⚠️ Master Data Sync လုပ်ဆောင်ရာတွင် ချို့ယွင်းချက်ရှိပါသည်");
-    } finally {
-      setIsMasterSyncing(false);
-    }
-  };
 
   const addMaster = () => {
     if (!mName.trim()) return;
@@ -3505,7 +1809,6 @@ const MasterDB = ({
   const deleteMaster = (id: number) => {
     const targetM = masterData.find(m => m.id === id);
     setMasterData(prev => prev.filter(m => m.id !== id));
-    deleteRecordFromFirestore('masterData', id);
     if (targetM) {
       logActivity({
         action: 'DELETE',
@@ -3618,6 +1921,7 @@ const MasterDB = ({
   const duplicateClusters = useMemo(() => {
     const typeMap: Record<string, MasterItem[]> = {};
     masterData.forEach(item => {
+      if (!item || !item.type) return;
       if (!typeMap[item.type]) typeMap[item.type] = [];
       typeMap[item.type].push(item);
     });
@@ -3633,17 +1937,18 @@ const MasterDB = ({
     Object.entries(typeMap).forEach(([type, items]) => {
       const groups: Record<string, MasterItem[]> = {};
       items.forEach(item => {
-        const k = norm(item.name);
+        const k = norm(item.name || '');
+        if (!k) return;
         if (!groups[k]) groups[k] = [];
         groups[k].push(item);
       });
 
       Object.entries(groups).forEach(([k, groupItems]) => {
+        // Group items that share the exact normalized name or are duplicate IDs
         if (groupItems.length > 1) {
-          // Sort items in group so the most recently updated/added item is FIRST (default primary)
           const sorted = [...groupItems].sort((a, b) => {
-            const timeA = a.updatedAt ? Date.parse(a.updatedAt) : a.id;
-            const timeB = b.updatedAt ? Date.parse(b.updatedAt) : b.id;
+            const timeA = a.updatedAt ? Date.parse(a.updatedAt) : (a.id || 0);
+            const timeB = b.updatedAt ? Date.parse(b.updatedAt) : (b.id || 0);
             return (timeB || 0) - (timeA || 0);
           });
           clusters.push({
@@ -3665,7 +1970,7 @@ const MasterDB = ({
     const primaryItem = cluster.items.find(i => i.id === primaryId) || cluster.items[0];
     const targetName = primaryItem.name.trim();
     const nonPrimaryItems = cluster.items.filter(i => i.id !== primaryId);
-    const oldNames = nonPrimaryItems.map(i => i.name);
+    const oldNames = nonPrimaryItems.map(i => i.name.trim());
     const idsToRemove = new Set(nonPrimaryItems.map(i => i.id));
 
     // Determine latest linkedValue across cluster items
@@ -3739,24 +2044,20 @@ const MasterDB = ({
     if (setRecords) {
       setRecords(prev => {
         const updatedRecs = prev.map(updateRecordFn);
-        try {
-          if (updatedRecs.length > 500) {
-            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs.slice(0, 500)));
-          } else {
-            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
-          }
-        } catch (e) {}
+        localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
         miniDB.set('records', updatedRecs).catch(() => {});
+        setSyncedHash('records', updatedRecs);
+        saveCollectionToFirestore('records', updatedRecs, true, false).catch(() => {});
         return updatedRecs;
       });
     }
     if (setTempRecords) {
       setTempRecords(prev => {
         const updatedTemps = prev.map(updateRecordFn);
-        try {
-          localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps.slice(0, 500)));
-        } catch (e) {}
+        localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps));
         miniDB.set('tempRecords', updatedTemps).catch(() => {});
+        setSyncedHash('tempRecords', updatedTemps);
+        saveCollectionToFirestore('tempRecords', updatedTemps, true, false).catch(() => {});
         return updatedTemps;
       });
     }
@@ -3770,11 +2071,32 @@ const MasterDB = ({
           linkedValue: targetLinked,
           updatedAt: new Date().toISOString()
         } : m);
-      try {
-        localStorage.setItem('imm_master_react', JSON.stringify(mergedList));
-      } catch (e) {}
-      miniDB.set('masterData', mergedList).catch(() => {});
-      return mergedList;
+
+      // Clean deduplication check
+      const uniqueList: MasterItem[] = [];
+      const seen = new Set<string>();
+      mergedList.forEach(m => {
+        const k = `${m.type}__${m.name.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+        if (!seen.has(k)) {
+          seen.add(k);
+          uniqueList.push(m);
+        }
+      });
+
+      localStorage.setItem('imm_master_react', JSON.stringify(uniqueList));
+      miniDB.set('masterData', uniqueList).catch(() => {});
+      setSyncedHash('masterData', uniqueList);
+      saveCollectionToFirestore('masterData', uniqueList, true, false).catch(() => {});
+      return uniqueList;
+    });
+
+    if (duplicateClusters.length <= 1) {
+      setShowMergeModal(false);
+    }
+    setSelectedTargetIds(prev => {
+      const next = { ...prev };
+      delete next[clusterKey];
+      return next;
     });
 
     showToast(`MERGED DUPLICATES INTO "${targetName}" SUCCESSFULLY`);
@@ -3797,7 +2119,7 @@ const MasterDB = ({
       const primaryItem = cluster.items.find(i => i.id === primaryId) || cluster.items[0];
       const targetName = primaryItem.name.trim();
       const nonPrimaryItems = cluster.items.filter(i => i.id !== primaryId);
-      const oldNames = nonPrimaryItems.map(i => i.name);
+      const oldNames = nonPrimaryItems.map(i => i.name.trim());
       nonPrimaryItems.forEach(i => allIdsToRemove.add(i.id));
 
       const latestLinked = cluster.items.find(i => i.linkedValue && i.linkedValue.trim())?.linkedValue?.trim();
@@ -3876,24 +2198,20 @@ const MasterDB = ({
     if (setRecords) {
       setRecords(prev => {
         const updatedRecs = prev.map(updateRecordBatchFn);
-        try {
-          if (updatedRecs.length > 500) {
-            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs.slice(0, 500)));
-          } else {
-            localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
-          }
-        } catch (e) {}
+        localStorage.setItem('imm_records_react', JSON.stringify(updatedRecs));
         miniDB.set('records', updatedRecs).catch(() => {});
+        setSyncedHash('records', updatedRecs);
+        saveCollectionToFirestore('records', updatedRecs, true, false).catch(() => {});
         return updatedRecs;
       });
     }
     if (setTempRecords) {
       setTempRecords(prev => {
         const updatedTemps = prev.map(updateRecordBatchFn);
-        try {
-          localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps.slice(0, 500)));
-        } catch (e) {}
+        localStorage.setItem('imm_temp_records_react', JSON.stringify(updatedTemps));
         miniDB.set('tempRecords', updatedTemps).catch(() => {});
+        setSyncedHash('tempRecords', updatedTemps);
+        saveCollectionToFirestore('tempRecords', updatedTemps, true, false).catch(() => {});
         return updatedTemps;
       });
     }
@@ -3918,176 +2236,28 @@ const MasterDB = ({
           }
           return m;
         });
-      try {
-        localStorage.setItem('imm_master_react', JSON.stringify(mergedList));
-      } catch (e) {}
-      miniDB.set('masterData', mergedList).catch(() => {});
-      return mergedList;
+
+      // Deduplicate any exact same name & type that might match
+      const uniqueList: MasterItem[] = [];
+      const seen = new Set<string>();
+      mergedList.forEach(m => {
+        const k = `${m.type}__${m.name.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+        if (!seen.has(k)) {
+          seen.add(k);
+          uniqueList.push(m);
+        }
+      });
+
+      localStorage.setItem('imm_master_react', JSON.stringify(uniqueList));
+      miniDB.set('masterData', uniqueList).catch(() => {});
+      setSyncedHash('masterData', uniqueList);
+      saveCollectionToFirestore('masterData', uniqueList, true, false).catch(() => {});
+      return uniqueList;
     });
 
     setShowMergeModal(false);
+    setSelectedTargetIds({});
     showToast(`MERGED ALL ${duplicateClusters.length} GROUPS SUCCESSFULLY`);
-  };
-
-  // Dedicated Auto-Sync: Scans recent records to sync & refresh all master data with latest matched values
-  const handleSyncMasterFromLatestRecords = () => {
-    const allRecs = [...(records || []), ...(tempRecords || [])].sort((a, b) => getRecordTime(b) - getRecordTime(a));
-    if (allRecs.length === 0) {
-      showToast("စနစ်အတွင်း မှတ်တမ်းများ မရှိသေးပါ (No records found)");
-      return;
-    }
-
-    const nowIso = new Date().toISOString();
-    const updatedMap = new Map<string, MasterItem>();
-
-    // 1. First seed with existing masterData (reversed so newer items override older)
-    [...(masterData || [])].reverse().forEach(m => {
-      if (m && m.name && m.type) {
-        const key = `${m.type}__${m.name.trim().toLowerCase()}`;
-        if (!updatedMap.has(key)) {
-          updatedMap.set(key, { ...m });
-        }
-      }
-    });
-
-    // 2. Scan records from newest to oldest to pull latest names and latest linkedValues
-    allRecs.forEach(r => {
-      if (!r) return;
-      
-      // Stay Location & Stay Description
-      const stayName = (r.formC?.address || r.address || '').trim();
-      const stayDesc = (r.formC?.stayDescription || r.stayDescription || '').trim();
-      if (stayName) {
-        const key = `Stay__${stayName.toLowerCase()}`;
-        const existing = updatedMap.get(key);
-        if (existing) {
-          if (stayDesc && (!existing.linkedValue || existing.linkedValue !== stayDesc)) {
-            existing.linkedValue = stayDesc;
-            existing.updatedAt = nowIso;
-          }
-        } else {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: stayName,
-            type: 'Stay',
-            linkedValue: stayDesc || undefined,
-            updatedAt: nowIso
-          });
-        }
-      }
-
-      // Agent & Contact
-      const agent = (r.broughtBy || '').trim();
-      const contact = (r.contactDetails || '').trim();
-      if (agent) {
-        const key = `Agent__${agent.toLowerCase()}`;
-        const existing = updatedMap.get(key);
-        if (existing) {
-          if (contact && (!existing.linkedValue || existing.linkedValue !== contact)) {
-            existing.linkedValue = contact;
-            existing.updatedAt = nowIso;
-          }
-        } else {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: agent,
-            type: 'Agent',
-            linkedValue: contact || undefined,
-            updatedAt: nowIso
-          });
-        }
-      }
-
-      // Official & Title
-      const offName = (r.formC?.officialName || r.officialName || '').trim();
-      const offTitle = (r.formC?.officialTitle || r.officialTitle || '').trim();
-      if (offName) {
-        const key = `Official__${offName.toLowerCase()}`;
-        const existing = updatedMap.get(key);
-        if (existing) {
-          if (offTitle && (!existing.linkedValue || existing.linkedValue !== offTitle)) {
-            existing.linkedValue = offTitle;
-            existing.updatedAt = nowIso;
-          }
-        } else {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: offName,
-            type: 'Official',
-            linkedValue: offTitle || undefined,
-            updatedAt: nowIso
-          });
-        }
-      }
-
-      // Reporter & Phone
-      const repName = (r.formC?.reporterName || '').trim();
-      const repPhone = (r.formC?.reporterPhone || '').trim();
-      if (repName) {
-        const key = `Reporter__${repName.toLowerCase()}`;
-        const existing = updatedMap.get(key);
-        if (existing) {
-          if (repPhone && (!existing.linkedValue || existing.linkedValue !== repPhone)) {
-            existing.linkedValue = repPhone;
-            existing.updatedAt = nowIso;
-          }
-        } else {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: repName,
-            type: 'Reporter',
-            linkedValue: repPhone || undefined,
-            updatedAt: nowIso
-          });
-        }
-      }
-
-      // Nationality
-      const nat = (r.nationality || '').trim();
-      if (nat) {
-        const key = `Nationality__${nat.toLowerCase()}`;
-        if (!updatedMap.has(key)) {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: nat,
-            type: 'Nationality',
-            updatedAt: nowIso
-          });
-        }
-      }
-
-      // Visa
-      const visa = (r.visaType || '').trim();
-      if (visa) {
-        const key = `Visa__${visa.toLowerCase()}`;
-        if (!updatedMap.has(key)) {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: visa,
-            type: 'Visa',
-            updatedAt: nowIso
-          });
-        }
-      }
-
-      // Vehicle
-      const veh = (r.vehicleInfo || '').trim();
-      if (veh) {
-        const key = `Vehicle__${veh.toLowerCase()}`;
-        if (!updatedMap.has(key)) {
-          updatedMap.set(key, {
-            id: Date.now() + Math.floor(Math.random() * 10000),
-            name: veh,
-            type: 'Vehicle',
-            updatedAt: nowIso
-          });
-        }
-      }
-    });
-
-    const newMasterList = Array.from(updatedMap.values());
-    setMasterData(newMasterList);
-    showToast(`မာစတာဒေတာ (${newMasterList.length} ခု) အား နောက်ဆုံးမှတ်တမ်းများ (Latest Records) နှင့် Auto-Sync ချိတ်ဆက်ပြီးပါပြီ`);
   };
 
   return (
@@ -4097,17 +2267,10 @@ const MasterDB = ({
           <Database className="text-blue-600" size={24} />
           <div>
             <h3 className="text-lg font-black uppercase">Master Database Management</h3>
-            <p className="text-xs text-slate-500 font-bold">Category Labels, Auto-Extraction & Cloud Server Synchronization</p>
+            <p className="text-xs text-slate-500 font-bold">Category Labels, Semi-Auto Merge, JSON Backup & Restore</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={handleSyncMasterFromLatestRecords}
-            className="btn bg-cyan-600 hover:bg-cyan-700 text-white text-[11px] font-black uppercase px-4 py-2 flex items-center gap-1.5 shadow-md shadow-cyan-100 cursor-pointer"
-            title="လက်ရှိမှတ်တမ်းများထဲမှ နိုင်ငံသား၊ ဗီဇာ၊ ဟိုတယ် စသည့် မာစတာအချက်အလက်များကို အလိုအလျောက် စုစည်းထုတ်ယူမည် (ဆာဗာ Sync မဟုတ်ပါ)"
-          >
-            <Sparkles size={14} /> Auto-Extract from Records
-          </button>
           <button
             onClick={() => {
               if (duplicateClusters.length === 0) {
@@ -4121,19 +2284,11 @@ const MasterDB = ({
           >
             <GitMerge size={14} /> Semi-Auto Merge ({duplicateClusters.length})
           </button>
-          <button 
-            onClick={handleMasterDataUnifiedSync} 
-            disabled={isMasterSyncing}
-            className={`btn ${isMasterSyncing ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'} text-white text-[11px] font-black uppercase px-4 py-2 flex items-center gap-1.5 shadow-md shadow-blue-100`}
-            title="ဒေတာအားလုံး (မှတ်တမ်းများ၊ မာစတာဒေတာ၊ စစ်ဆေးမှုများ) ကို Cloud Server သို့ တိုက်ရိုက် Sync ပြုလုပ်မည်"
-          >
-            <UploadCloud size={14} className={isMasterSyncing ? "animate-bounce" : ""} /> {isMasterSyncing ? "Syncing All Data..." : "Cloud Sync All Data"}
-          </button>
           <button onClick={backupCombinedJSON} className="btn bg-indigo-600 text-white hover:bg-indigo-700 text-[11px] uppercase px-4 py-2 flex items-center gap-1.5 border border-indigo-500 shadow-md shadow-indigo-100 cursor-pointer">
-            <Download size={14} /> Combined Backup
+            <Download size={14} /> Backup (JSON)
           </button>
           <label className="btn bg-indigo-800/10 hover:bg-indigo-800/20 text-indigo-700 border border-indigo-200 text-[11px] uppercase px-4 py-2 cursor-pointer flex items-center gap-1.5 shadow-md shadow-indigo-100/50">
-            <Upload size={14} /> Combined Restore
+            <Upload size={14} /> Restore (JSON)
             <input type="file" className="hidden" accept=".json" onChange={restoreCombinedJSON} />
           </label>
         </div>
@@ -4642,7 +2797,6 @@ const TelegraphTables = ({
   setActivePrintPreview,
   showToast,
   movementMap = {},
-  checkingHistory = [],
   dossierHistory = [],
   masterData = [],
   tempRecords = []
@@ -4653,7 +2807,6 @@ const TelegraphTables = ({
   setActivePrintPreview: React.Dispatch<React.SetStateAction<any>>;
   showToast: (msg: string) => void;
   movementMap?: Record<string, MovementData>;
-  checkingHistory?: CheckingHistoryEntry[];
   dossierHistory?: DossierRecord[];
   masterData?: MasterItem[];
   tempRecords?: ImmRecord[];
@@ -7428,15 +5581,15 @@ const mergeByUniqueKey = <T extends Record<string, any>>(localArr: T[], remoteAr
 
   const getItemKey = (item: any): string | null => {
     if (!item) return null;
-    if (item.date && item.vehicleNo) {
-      return `veh_${item.date}_${String(item.vehicleNo).toUpperCase().trim()}`;
-    }
     // For masterData items with name and type, unify by type and normalized name so duplicate entries across devices don't split
     if (item.name && item.type) {
       return `master_${String(item.type).trim().toLowerCase()}_${String(item.name).trim().toLowerCase().replace(/\s+/g, ' ')}`;
     }
     if (item[key] !== undefined && item[key] !== null && String(item[key]).trim() !== '') {
       return `${key}_${item[key]}`;
+    }
+    if (item.date && item.vehicleNo) {
+      return `veh_${item.date}_${String(item.vehicleNo).toUpperCase().trim()}_${item.time || ''}_${item.id || ''}`;
     }
     if (item.timestamp && item.passport) {
       return `ts_pp_${item.timestamp}_${item.passport.toUpperCase().trim()}`;
@@ -7569,11 +5722,6 @@ export default function App() {
       ];
     });
 
-    // Initialize Firebase Anonymous Authentication on App startup
-    useEffect(() => {
-      initAuth();
-    }, []);
-
     // Subscribe to Active Sessions for SuperAdmin or targeted device kick check & real-time role changes
     useEffect(() => {
       if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
@@ -7652,6 +5800,21 @@ export default function App() {
       await saveDeviceSession(newSession);
     };
 
+    // Hourly Heartbeat Timer Effect (1 Hour Interval = 3,600,000ms to minimize Cloud Read/Write Quota)
+    useEffect(() => {
+      if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
+
+      sendHeartbeatPing(cloudAuthUser);
+
+      // Heartbeat ping every 1 Hour (3,600,000 ms)
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+      const heartbeatInterval = setInterval(() => {
+        sendHeartbeatPing();
+      }, ONE_HOUR_MS);
+
+      return () => clearInterval(heartbeatInterval);
+    }, [cloudAuthUser?.deviceId, cloudAuthUser?.username]);
+
     // Font Scaling & UI Zoom state (11 granular scaling levels)
     const [fontScale, setFontScale] = useState<string>(() => {
       return localStorage.getItem('imm_pwa_font_scale') || '100';
@@ -7675,7 +5838,6 @@ export default function App() {
 
     // Navigation Dropdowns & Popovers state
     const [isMainMenuOpen, setIsMainMenuOpen] = useState(false);
-    const [isStatusPopoverOpen, setIsStatusPopoverOpen] = useState(false);
     const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -7710,8 +5872,6 @@ export default function App() {
         setTempRecords(prev => prev.map(r => (r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed') ? { ...r, syncStatus: 'synced' } : r));
       } else if (col === 'vehicleSummaries') {
         setVehicleSummaries(prev => prev.map(s => (s.syncStatus === 'pending_sync' || s.syncStatus === 'upload_failed') ? { ...s, syncStatus: 'synced' } : s));
-      } else if (col === 'checkingHistory') {
-        setCheckingHistory(prev => prev.map(r => (r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed') ? { ...r, syncStatus: 'synced' } : r));
       }
     };
 
@@ -7722,8 +5882,6 @@ export default function App() {
         setTempRecords(prev => prev.map(r => (r.syncStatus === 'pending_sync' || !r.syncStatus) ? { ...r, syncStatus: 'upload_failed' } : r));
       } else if (col === 'vehicleSummaries') {
         setVehicleSummaries(prev => prev.map(s => (s.syncStatus === 'pending_sync' || !s.syncStatus) ? { ...s, syncStatus: 'upload_failed' } : s));
-      } else if (col === 'checkingHistory') {
-        setCheckingHistory(prev => prev.map(r => (r.syncStatus === 'pending_sync' || !r.syncStatus) ? { ...r, syncStatus: 'upload_failed' } : r));
       }
     };
 
@@ -7734,16 +5892,15 @@ export default function App() {
       }
       try {
         resetQuotaState();
-        showToast(" Cloud သို့ ဒေတာများ တိုက်ရိုက် Upload Sync ပြုလုပ်နေပါသည်...");
+        showToast("📡 Cloud သို့ ဒေတာများ တိုက်ရိုက် Upload Sync ပြုလုပ်နေပါသည်...");
         const res1 = await saveCollectionToFirestore('records', records, true);
         const res2 = await saveCollectionToFirestore('tempRecords', tempRecords, true);
         const res3 = await saveCollectionToFirestore('masterData', masterData, true);
         const res4 = await saveCollectionToFirestore('vehicleSummaries', vehicleSummaries, true);
-        const res5 = await saveCollectionToFirestore('checkingHistory', checkingHistory, true);
         const res6 = await saveCollectionToFirestore('dossierHistory', dossierHistory, true);
         const res7 = await saveCollectionToFirestore('watchList', watchList, true);
 
-        if (res1 && res2 && res3 && res4 && res5 && res6 && res7) {
+        if (res1 && res2 && res3 && res4 && res6 && res7) {
           setIsCloudSynced(true);
           updateLastSyncTimestamp();
           setUploadErrorAlarm(null);
@@ -7751,17 +5908,15 @@ export default function App() {
           markSynced('tempRecords');
           markSynced('masterData');
           markSynced('vehicleSummaries');
-          markSynced('checkingHistory');
           markSynced('dossierHistory');
           markSynced('watchList');
-          showToast(` Cloud သို့ အချက်အလက်များ အားလုံး တိုက်ရိုက် Upload Sync ပြီးပါပြီ (Records ${records.length} ခု၊ WatchList ${watchList.length} ခု)`);
+          showToast(`✓ Cloud သို့ အချက်အလက်များ အားလုံး တိုက်ရိုက် Upload Sync ပြီးပါပြီ (Records ${records.length} ခု၊ WatchList ${watchList.length} ခု)`);
         } else {
           setIsCloudSynced(false);
           if (res1) markSynced('records'); else markUploadFailed('records');
           if (res2) markSynced('tempRecords'); else markUploadFailed('tempRecords');
           if (res3) markSynced('masterData'); else markUploadFailed('masterData');
           if (res4) markSynced('vehicleSummaries'); else markUploadFailed('vehicleSummaries');
-          if (res5) markSynced('checkingHistory'); else markUploadFailed('checkingHistory');
           if (res6) markSynced('dossierHistory'); else markUploadFailed('dossierHistory');
           if (res7) markSynced('watchList'); else markUploadFailed('watchList');
 
@@ -7799,7 +5954,7 @@ export default function App() {
         
         // Smart fetch: check Firestore collections for updates
         const updatedCollections = await checkAndFetchUpdatedCollections([
-          'records', 'tempRecords', 'masterData', 'vehicleSummaries', 'checkingHistory', 'dossierHistory', 'watchList'
+          'records', 'tempRecords', 'masterData', 'vehicleSummaries', 'dossierHistory', 'watchList'
         ], force, (pct, col) => {
           if (!silent) {
             setDownloadProgress({ isDownloading: true, percent: pct, currentCol: col });
@@ -7865,20 +6020,6 @@ export default function App() {
           });
         }
 
-        if (Array.isArray(updatedCollections.checkingHistory) && updatedCollections.checkingHistory.length > 0) {
-          fetchedAny = true;
-          setCheckingHistory(currentHistory => {
-            const merged = mergeByUniqueKey(currentHistory, updatedCollections.checkingHistory, 'id');
-            if (merged.length !== currentHistory.length || JSON.stringify(merged) !== JSON.stringify(currentHistory)) {
-              updatedAny = true;
-            }
-            localStorage.setItem('checking_verification_history_logs_v1', JSON.stringify(merged));
-            miniDB.set('checkingHistory', merged).catch(() => {});
-            setSyncedHash('checkingHistory', merged);
-            return merged;
-          });
-        }
-
         if (Array.isArray(updatedCollections.dossierHistory) && updatedCollections.dossierHistory.length > 0) {
           fetchedAny = true;
           setDossierHistory(currentDossier => {
@@ -7920,9 +6061,10 @@ export default function App() {
             showToast(" Cloud အချက်အလက်နှင့် လက်ရှိ Local အချက်အလက်များ တူညီနေပါသည်");
           }
         }
-      } catch (err) {
-        console.error("Fetch cloud data error:", err);
-        if (!silent) showToast("⚠️ Local Data ကို ဆက်လက်အသုံးပြုနေပါသည်");
+      } catch (err: any) {
+        if (!silent) {
+          showToast("⚠️ Local Data ကို ဆက်လက်အသုံးပြုနေပါသည်");
+        }
       } finally {
         setIsInitialSyncing(false);
         if (!silent) {
@@ -7936,6 +6078,30 @@ export default function App() {
         }
       }
     };
+
+    // 25-Second Periodic Background Smart Poll & Window Focus Sync (Auto-receives updates from other devices/phones)
+    useEffect(() => {
+      if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
+
+      const backgroundSyncInterval = setInterval(() => {
+        if (isOnline && !getIsQuotaExhausted() && document.visibilityState === 'visible' && !isRemoteSyncingRef.current && !isAutoSyncing) {
+          handleFetchDataFromCloud(false, true).catch(() => {});
+        }
+      }, 25000);
+
+      const handleFocus = () => {
+        if (isOnline && !isRemoteSyncingRef.current && !isAutoSyncing) {
+          handleFetchDataFromCloud(false, true).catch(() => {});
+        }
+      };
+
+      window.addEventListener('focus', handleFocus);
+
+      return () => {
+        clearInterval(backgroundSyncInterval);
+        window.removeEventListener('focus', handleFocus);
+      };
+    }, [cloudAuthUser, isOnline, isAutoSyncing]);
 
     // Startup Launch Sequence: Check if Cloud Auth exists
     useEffect(() => {
@@ -8041,12 +6207,18 @@ export default function App() {
         setLoginUsernameInput('');
         setLoginPasswordInput('');
         setShowCloudLoginModal(false);
-        setIsInitialSyncing(false);
+        setIsInitialSyncing(true);
         showToast(`မင်္ဂလာပါ ${u} (${matchedRole}) အနေဖြင့် အသုံးပြုနိုင်ပါပြီ`);
-        // Single initial pull on login
-        setTimeout(() => {
-          handleFetchDataFromCloud(false, true).catch(() => {});
-        }, 300);
+
+        // Perform Initial Cloud Sync for the new device
+        handleFetchDataFromCloud(true)
+          .then(() => {
+            showToast("Cloud မှ ဒေတာများ အောင်မြင်စွာ Sync လုပ်ပြီးပါပြီ");
+          })
+          .catch(err => console.warn("Background cloud check on login:", err))
+          .finally(() => {
+            setIsInitialSyncing(false);
+          });
       } else {
         setLoginAuthError("Username သို့မဟုတ် Password မှားယွင်းနေပါသည်။ (လုံခြုံရေးအရ ငြင်းပယ်သည်)");
       }
@@ -8174,16 +6346,12 @@ export default function App() {
     const [selectedIds, setSelectedIds] = useState<number[]>([]);
     const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
     const [vehicleSummaries, setVehicleSummaries] = useState<VehicleSummary[]>([]);
-    const [isCounterCheckOpen, setIsCounterCheckOpen] = useState<boolean>(false);
-    const counterCheckSuspectCount = useMemo(() => {
-      return analyzeRecordsForErrors(records).length;
-    }, [records]);
     const [passportSearchResults, setPassportSearchResults] = useState<ImmRecord[]>([]);
     const [nameSearchResults, setNameSearchResults] = useState<ImmRecord[]>([]);
     const [ffeConfirmation, setFfeConfirmation] = useState<{ show: boolean, message: string } | null>(null);
     const [ffeSuccessMsg, setFfeSuccessMsg] = useState<string | null>(null);
     const [currentUser, setCurrentUser] = useState<{ name: string, title: string } | null>(null);
-    const [loginName, setLoginName] = useState('');
+    const [loginName, setLoginName] = useState(() => localStorage.getItem('lastCheckedOfficerName') || '');
     const [showOfficerLoginModal, setShowOfficerLoginModal] = useState<boolean>(false);
 
     // 5-Minute Inactivity Timeout (Officer Session Reset)
@@ -8276,32 +6444,14 @@ export default function App() {
     const prevLocalHashesRef = useRef<Record<string, string>>({});
 
     const [dailyPdfs, setDailyPdfs] = useState<Record<string, { base64: string; name: string }>>({});
-    const [checkingHistory, setCheckingHistory] = useState<CheckingHistoryEntry[]>([]);
     const [dossierHistory, setDossierHistory] = useState<DossierRecord[]>([]);
     const [watchList, setWatchList] = useState<WatchListRecord[]>([]);
-
-    const [checkingPrintData, setCheckingPrintData] = useState<{
-      title: string;
-      type: 'CO_LTD_PENDING' | 'OTHERS_PENDING' | 'CHECKED_HISTORY';
-      data: any[];
-    } | null>(null);
 
     const [activePrintPreview, setActivePrintPreview] = useState<{
       title: string;
       type: 'CO_LTD_PENDING' | 'OTHERS_PENDING' | 'CHECKED_HISTORY' | 'DAILY_REPORT' | 'STILL_IN_ANALYTICS' | 'DOSSIER';
       data: any[];
     } | null>(null);
-
-    useEffect(() => {
-      if (checkingPrintData) {
-        const timer = setTimeout(() => {
-          window.focus();
-          window.print();
-          setCheckingPrintData(null);
-        }, 500);
-        return () => clearTimeout(timer);
-      }
-    }, [checkingPrintData]);
 
     useEffect(() => {
       if (activePrintPreview) {
@@ -8320,6 +6470,103 @@ export default function App() {
         };
       }
     }, [activePrintPreview]);
+
+    // Real-Time 2-Way Auto-Sync Snapshot Listeners from Cloud Firestore (immi-log-sys)
+    useEffect(() => {
+      const unsubRecords = subscribeToFirestoreCollection('records', (cloudRecords) => {
+        if (Array.isArray(cloudRecords) && cloudRecords.length > 0) {
+          setRecords(prev => {
+            const merged = mergeByUniqueKey(prev, cloudRecords, 'id');
+            localStorage.setItem('imm_records_react', JSON.stringify(merged));
+            miniDB.set('records', merged).catch(() => {});
+            return merged;
+          });
+        }
+      });
+
+      const unsubTemp = subscribeToFirestoreCollection('tempRecords', (cloudTemps) => {
+        if (Array.isArray(cloudTemps) && cloudTemps.length > 0) {
+          setTempRecords(prev => {
+            const merged = mergeByUniqueKey(prev, cloudTemps, 'id');
+            localStorage.setItem('imm_temp_records_react', JSON.stringify(merged));
+            miniDB.set('tempRecords', merged).catch(() => {});
+            return merged;
+          });
+        }
+      });
+
+      const unsubMaster = subscribeToFirestoreCollection('masterData', (cloudMaster) => {
+        if (Array.isArray(cloudMaster) && cloudMaster.length > 0) {
+          setMasterData(prev => {
+            const merged = mergeByUniqueKey(prev, cloudMaster, 'id');
+            localStorage.setItem('imm_master_react', JSON.stringify(merged));
+            miniDB.set('masterData', merged).catch(() => {});
+            return merged;
+          });
+        }
+      });
+
+      const unsubVehicles = subscribeToFirestoreCollection('vehicleSummaries', (cloudVehicles) => {
+        if (Array.isArray(cloudVehicles) && cloudVehicles.length > 0) {
+          setVehicleSummaries(prev => {
+            const merged = mergeByUniqueKey(prev, cloudVehicles, 'id');
+            localStorage.setItem('imm_vehicle_summaries', JSON.stringify(merged));
+            miniDB.set('vehicleSummaries', merged).catch(() => {});
+            return merged;
+          });
+        }
+      });
+
+      const unsubDossier = subscribeToFirestoreCollection('dossierHistory', (cloudDossier) => {
+        if (Array.isArray(cloudDossier) && cloudDossier.length > 0) {
+          setDossierHistory(prev => {
+            const merged = mergeByUniqueKey(prev, cloudDossier, 'id');
+            localStorage.setItem('imm_dossier_history_react', JSON.stringify(merged));
+            miniDB.set('dossierHistory', merged).catch(() => {});
+            return merged;
+          });
+        }
+      });
+
+      const unsubWatch = subscribeToFirestoreCollection('watchList', (cloudWatch) => {
+        if (Array.isArray(cloudWatch) && cloudWatch.length > 0) {
+          setWatchList(prev => {
+            const merged = mergeByUniqueKey(prev, cloudWatch, 'id');
+            localStorage.setItem('imm_watchlist_records_v1', JSON.stringify(merged));
+            miniDB.set('watchList', merged).catch(() => {});
+            return merged;
+          });
+        }
+      });
+
+      return () => {
+        if (unsubRecords) unsubRecords();
+        if (unsubTemp) unsubTemp();
+        if (unsubMaster) unsubMaster();
+        if (unsubVehicles) unsubVehicles();
+        if (unsubDossier) unsubDossier();
+        if (unsubWatch) unsubWatch();
+      };
+    }, []);
+
+    // Debounced automatic background sync to Cloud Firestore when local state changes
+    useEffect(() => {
+      if (!isDBCardLoaded || !isOnline || isRemoteSyncingRef.current || getIsQuotaExhausted()) return;
+
+      if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+      autoSyncTimerRef.current = setTimeout(() => {
+        saveCollectionToFirestore('records', records).catch(() => {});
+        saveCollectionToFirestore('tempRecords', tempRecords).catch(() => {});
+        saveCollectionToFirestore('masterData', masterData).catch(() => {});
+        saveCollectionToFirestore('vehicleSummaries', vehicleSummaries).catch(() => {});
+        saveCollectionToFirestore('dossierHistory', dossierHistory).catch(() => {});
+        saveCollectionToFirestore('watchList', watchList).catch(() => {});
+      }, 1500);
+
+      return () => {
+        if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+      };
+    }, [records, tempRecords, masterData, vehicleSummaries, dossierHistory, watchList, isDBCardLoaded, isOnline]);
 
     const passportToLatestInfo = useMemo(() => {
       const map: Record<string, { fullname: string; nationality: string; gender: string }> = {};
@@ -8391,7 +6638,34 @@ export default function App() {
           const saved = localStorage.getItem('imm_master_react');
           if (saved) lMData = JSON.parse(saved);
         } catch {}
-        const mData = mergeByUniqueKey(dbMData, lMData, 'id');
+        let mData = mergeByUniqueKey(dbMData, lMData, 'id');
+
+        // Provide standard default master metadata if list is completely empty
+        if (mData.length === 0) {
+          mData = [
+            { id: 1, type: 'Title', name: 'ဦးစီးအရာရှိ', linkedValue: '', updatedAt: new Date().toISOString() },
+            { id: 2, type: 'Title', name: 'ဒုတိယလဝကမှူး', linkedValue: '', updatedAt: new Date().toISOString() },
+            { id: 3, type: 'Title', name: 'လဝကမှူး', linkedValue: '', updatedAt: new Date().toISOString() },
+            { id: 4, type: 'Title', name: 'လက်ထောက်လဝကမှူး', linkedValue: '', updatedAt: new Date().toISOString() },
+            { id: 5, type: 'Official', name: 'DUTY OFFICER', linkedValue: 'ဦးစီးအရာရှိ', updatedAt: new Date().toISOString() }
+          ];
+        }
+
+        // Auto-extract any historical officers from records if not yet in masterData
+        const existingOfficials = new Set(mData.filter(m => m.type === 'Official').map(m => m.name.toLowerCase().trim()));
+        recs.forEach((r: any) => {
+          if (r.officialName && r.officialName.trim() && !existingOfficials.has(r.officialName.toLowerCase().trim())) {
+            existingOfficials.add(r.officialName.toLowerCase().trim());
+            mData.push({
+              id: Date.now() + Math.floor(Math.random() * 10000),
+              type: 'Official',
+              name: r.officialName.trim(),
+              linkedValue: r.officialTitle || 'Officer',
+              updatedAt: new Date().toISOString()
+            });
+          }
+        });
+
         setMasterData(mData);
 
         // 4. Vehicle Summaries
@@ -8417,22 +6691,7 @@ export default function App() {
         }
         setDailyPdfs(pdfs);
 
-        // 6. Checking History
-        const dbCheckHist: CheckingHistoryEntry[] = (await miniDB.get('checkingHistory')) || [];
-        let lCheckHist: CheckingHistoryEntry[] = [];
-        try {
-          const saved = localStorage.getItem('checking_verification_history_logs_v1');
-          if (saved) lCheckHist = JSON.parse(saved);
-        } catch {}
-        let checkHist = mergeByUniqueKey(dbCheckHist, lCheckHist, 'id');
-        // Normalize checking history statuses
-        checkHist = checkHist.map(h => ({
-          ...h,
-          status: h.status === 'STILL PERMITTED' ? 'STAY PERMITTED' : (h.status === 'STILL NOT PERMITTED YET' ? 'STAY NOT PERMITTED' : h.status)
-        }));
-        setCheckingHistory(checkHist);
-
-        // 7. Dossier History
+        // 6. Dossier History
         const dbDHist: DossierRecord[] = (await miniDB.get('dossierHistory')) || [];
         let lDHist: DossierRecord[] = [];
         try {
@@ -8442,7 +6701,7 @@ export default function App() {
         const dHist = mergeByUniqueKey(dbDHist, lDHist, 'id');
         setDossierHistory(dHist);
 
-        // 8. Watch List
+        // 7. Watch List
         const dbWList: WatchListRecord[] = (await miniDB.get('watchList')) || [];
         let lWList: WatchListRecord[] = [];
         try {
@@ -8457,7 +6716,6 @@ export default function App() {
         setSyncedHash('tempRecords', tRecs);
         setSyncedHash('masterData', mData);
         setSyncedHash('vehicleSummaries', vSums);
-        setSyncedHash('checkingHistory', checkHist);
         setSyncedHash('dossierHistory', dHist);
         setSyncedHash('watchList', wList);
 
@@ -8477,12 +6735,7 @@ export default function App() {
       } finally {
         setIsDBCardLoaded(true);
         setIsInitialSyncing(false);
-        // Perform a single initial cloud pull on startup if logged in
-        if (localStorage.getItem('imm_pwa_cloud_auth_user')) {
-          setTimeout(() => {
-            handleFetchDataFromCloud(false, true).catch(() => {});
-          }, 600);
-        }
+        setTimeout(() => handleFetchDataFromCloud(false, true).catch(() => {}), 200);
       }
     };
 
@@ -8493,10 +6746,6 @@ export default function App() {
   useEffect(() => {
     const unsubAuth = initAuth(() => {
       setIsCloudSynced(true);
-      // Auto pull once when auth is verified and logged in
-      if (localStorage.getItem('imm_pwa_cloud_auth_user')) {
-        handleFetchDataFromCloud(false, true).catch(() => {});
-      }
     });
 
     return () => {
@@ -8552,16 +6801,6 @@ export default function App() {
 
   useEffect(() => {
     if (!isDBCardLoaded) return;
-    miniDB.set('checkingHistory', checkingHistory).catch(err => console.error("IndexedDB save checkingHistory failed:", err));
-    try {
-      localStorage.setItem('checking_verification_history_logs_v1', JSON.stringify(checkingHistory));
-    } catch (err) {
-      console.error("LocalStorage write failed:", err);
-    }
-  }, [checkingHistory, isDBCardLoaded]);
-
-  useEffect(() => {
-    if (!isDBCardLoaded) return;
     miniDB.set('dossierHistory', dossierHistory).catch(err => console.error("IndexedDB save dossierHistory failed:", err));
     try {
       localStorage.setItem('imm_dossier_history_react', JSON.stringify(dossierHistory));
@@ -8608,10 +6847,6 @@ export default function App() {
           localStorage.setItem('imm_vehicle_summaries', JSON.stringify(vehicleSummaries));
           miniDB.set('vehicleSummaries', vehicleSummaries).catch(() => {});
         }
-        if (checkingHistory.length > 0) {
-          localStorage.setItem('checking_verification_history_logs_v1', JSON.stringify(checkingHistory));
-          miniDB.set('checkingHistory', checkingHistory).catch(() => {});
-        }
         if (dossierHistory.length > 0) {
           localStorage.setItem('imm_dossier_history_react', JSON.stringify(dossierHistory));
           miniDB.set('dossierHistory', dossierHistory).catch(() => {});
@@ -8640,7 +6875,7 @@ export default function App() {
       window.removeEventListener('pagehide', emergencySave);
       document.removeEventListener('visibilitychange', handleVis);
     };
-  }, [records, tempRecords, masterData, vehicleSummaries, checkingHistory, dossierHistory, watchList]);
+  }, [records, tempRecords, masterData, vehicleSummaries, dossierHistory, watchList]);
 
   // Helper: Auto-save to Master and link/update stay description/address
   const syncMaster = (value: string | undefined, type: MasterItem['type'], linkedValue?: string) => {
@@ -8711,14 +6946,11 @@ export default function App() {
         const exactMatch = allPool
           .sort((a, b) => getRecordTime(b) - getRecordTime(a))
           .find(r => r && r.passport && typeof r.passport === 'string' && r.passport.toUpperCase() === pp);
-        const latestCheck = (checkingHistory || []).find(c => c && c.passport && typeof c.passport === 'string' && c.passport.toUpperCase() === pp);
         const invRemark = getLatestVerificationRemark(pp, dossierHistory, allPool);
-        const permitStatus = latestCheck?.status 
-          ? (latestCheck.status === 'STAY PERMITTED' || latestCheck.status === 'STILL PERMITTED' ? 'STAY PERMITTED' : 'STAY NOT PERMITTED')
-          : (exactMatch?.stillPermittedStatus || '');
-        const permitBy = latestCheck?.permittedBy || exactMatch?.permittedBy || '';
+        const permitStatus = exactMatch?.stillPermittedStatus || '';
+        const permitBy = exactMatch?.permittedBy || '';
 
-        if (exactMatch || latestCheck || (invRemark && invRemark !== '-')) {
+        if (exactMatch || (invRemark && invRemark !== '-')) {
           setFormData(prev => {
             const matchAddress = exactMatch?.address || prev.address || '';
             const cleanAddr = matchAddress.trim().toLowerCase();
@@ -8775,11 +7007,8 @@ export default function App() {
         const stayDesc = latestRecStay?.stayDescription || latestMasterStay?.linkedValue || r.stayDescription || '';
         
         const invRemark = getLatestVerificationRemark(pp, dossierHistory, records);
-        const latestCheck = (checkingHistory || []).find(c => c && c.passport && typeof c.passport === 'string' && c.passport.toUpperCase() === pp);
-        const permitStatus = latestCheck?.status 
-          ? (latestCheck.status === 'STAY PERMITTED' || latestCheck.status === 'STILL PERMITTED' ? 'STAY PERMITTED' : 'STAY NOT PERMITTED')
-          : (r.stillPermittedStatus || '');
-        const permitBy = latestCheck?.permittedBy || r.permittedBy || '';
+        const permitStatus = r.stillPermittedStatus || '';
+        const permitBy = r.permittedBy || '';
 
         return {
           ...r,
@@ -8859,11 +7088,8 @@ export default function App() {
         const stayDesc = latestRecStay?.stayDescription || latestMasterStay?.linkedValue || r.stayDescription || '';
 
         const invRemark = getLatestVerificationRemark(pp, dossierHistory, records);
-        const latestCheck = (checkingHistory || []).find(c => c && c.passport && typeof c.passport === 'string' && c.passport.toUpperCase() === pp);
-        const permitStatus = latestCheck?.status 
-          ? (latestCheck.status === 'STAY PERMITTED' || latestCheck.status === 'STILL PERMITTED' ? 'STAY PERMITTED' : 'STAY NOT PERMITTED')
-          : (r.stillPermittedStatus || '');
-        const permitBy = latestCheck?.permittedBy || r.permittedBy || '';
+        const permitStatus = r.stillPermittedStatus || '';
+        const permitBy = r.permittedBy || '';
 
         return {
           ...r,
@@ -9165,38 +7391,6 @@ export default function App() {
         showToast("💾 အင်တာနက်မရှိပါ - ဖုန်းထဲတွင် သိမ်းဆည်းထားပြီး လိုင်းရပါက Cloud Sync ခလုတ်ဖြင့် ပို့ဆောင်နိုင်ပါသည်");
       }
 
-      // Automatically sync checkpoint status to checkingHistory as checked
-      if (newRecord.stillPermittedStatus) {
-        const isCoAddressLocal = (addr: string) => {
-          const a = (addr || '').toLowerCase();
-          return a.includes('hotel') || a.includes('co ltd') || a.includes('co.,ltd') || a.includes('company') || a.includes('guesthouse') || a.includes('motel') || a.includes('inn');
-        };
-        const isCo = isCoAddressLocal(newRecord.address || '');
-        const autoHistEntry = {
-          id: Date.now(),
-          passport: (newRecord.passport || '').toUpperCase(),
-          fullname: newRecord.fullname || '',
-          nationality: newRecord.nationality || '',
-          previousPassport: newRecord.previousPassport,
-          dualPassportRemarks: newRecord.dualPassportRemarks,
-          linkedPassports: newRecord.linkedPassports,
-          type: isCo ? 'CO_LTD' : 'OTHERS' as any,
-          checkDate: (newRecord.timestamp || '').split(', ')[0] || new Date().toLocaleDateString('en-GB'),
-          originalAddress: newRecord.address || '',
-          confirmedAddress: newRecord.address || '',
-          confirmedStayDescription: newRecord.stayDescription || '',
-          status: newRecord.stillPermittedStatus,
-          permittedBy: newRecord.permittedBy || '',
-          officerName: newRecord.officialName || 'Checkpoint Duty',
-          officerTitle: newRecord.officialTitle || 'Officer',
-          timestamp: newRecord.timestamp || new Date().toLocaleString('en-GB')
-        };
-        setCheckingHistory(prev => {
-          const filtered = (prev || []).filter(h => h && h.passport && typeof h.passport === 'string' && h.passport.toUpperCase() !== (newRecord.passport || '').toUpperCase());
-          return [autoHistEntry, ...filtered];
-        });
-      }
-
       const successMsg = currentMode === 'IN' 
         ? `${newRecord.officialTitle || ''} ${newRecord.officialName || ''} စာရင်းသွင်းသော လေဆိပ် အဝင်စာရင်း စာရင်းသွင်းပြီးပါပြီ`
         : `${newRecord.officialTitle || ''} ${newRecord.officialName || ''} စာရင်းသွင်းသော လေဆိပ် အထွက်စာရင်းအား စာရင်းသွင်းပြီးပါပြီ`;
@@ -9354,30 +7548,34 @@ export default function App() {
   const handleLogin = () => {
     const raw = loginName.trim();
     if (!raw) {
-      showToast("ကျေးဇူးပြု၍ စာရင်းသွင်းအရာရှိ အမည် ရိုက်ထည့်ပါ");
+      showToast("⚠️ ကျေးဇူးပြု၍ စာရင်းသွင်းအရာရှိ အမည် ရိုက်ထည့်ပါ");
       return;
     }
     const val = raw.toLowerCase().replace(/\s+/g, '');
-    const match = masterData.find(m => m.type === 'Official' && m.name.toLowerCase().replace(/\s+/g, '') === val);
+    const match = masterData.find(m => m.type === 'Official' && m.name && m.name.toLowerCase().replace(/\s+/g, '') === val);
     
     if (!match) {
-      showToast("⚠️ စာရင်းသွင်းအရာရှိ အမည် မမှန်ကန်ပါ (Master DB တွင် မတွေ့ရှိပါ)");
+      showToast("⚠️ အရာရှိအမည် မှားယွင်းနေပါသည် / Master Data တွင် မရှိပါ");
       return;
     }
 
     const officialName = match.name;
-    let finalTitle = match.linkedValue && match.linkedValue.trim() ? match.linkedValue.trim() : 'Officer';
+    let finalTitle = match?.linkedValue && match.linkedValue.trim() ? match.linkedValue.trim() : '';
 
-    if (!match.linkedValue) {
+    if (!finalTitle) {
       const all = [...records, ...tempRecords].sort((a,b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
       const latestWithTitle = all.find(r => 
         r.officialName?.toLowerCase().replace(/\s+/g, '') === val && r.officialTitle
       );
-      if (latestWithTitle) {
-        finalTitle = latestWithTitle.officialTitle || 'Officer';
+      if (latestWithTitle && latestWithTitle.officialTitle) {
+        finalTitle = latestWithTitle.officialTitle;
       } else {
         const titleMatch = masterData.find(m => m.type === 'Title' && m.name.trim() !== '');
-        if (titleMatch) finalTitle = titleMatch.name;
+        if (titleMatch && titleMatch.name) {
+          finalTitle = titleMatch.name;
+        } else {
+          finalTitle = localStorage.getItem('lastCheckedOfficerTitle') || 'Officer';
+        }
       }
     }
 
@@ -9416,155 +7614,61 @@ export default function App() {
             </div>
           </div>
 
-          {/* MIDDLE STATUS BADGE (COMPACT POPOVER TRIGGER) */}
-          <div className="relative">
-            <button
-              onClick={() => {
-                setIsSyncModalOpen(true);
-              }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-black tracking-wide border backdrop-blur-sm transition-all cursor-pointer shadow-xs"
-              title="Click to view Cloud Server & All Devices Sync Hub"
-            >
-              {downloadProgress?.isDownloading ? (
-                <div className="flex items-center gap-1.5 bg-cyan-500/25 text-cyan-200 border-cyan-400/50 px-2 py-0.5 rounded-lg animate-pulse" title={`Cloud Data Downloading (${downloadProgress.currentCol})`}>
-                  <Download size={11} className="animate-bounce text-cyan-300" />
-                  <span className="font-extrabold text-[10px]">Cloud Down: <span className="font-mono text-cyan-200">{downloadProgress.percent}%</span></span>
-                </div>
-              ) : !isOnline ? (
-                <div className="flex items-center gap-1 bg-rose-500/20 text-rose-300 border-rose-400/30 px-1.5 py-0.5 rounded-lg">
-                  <WifiOff size={11} className="text-rose-400" />
-                  <span className="hidden xs:inline">Offline</span>
-                </div>
-              ) : isAutoSyncing ? (
-                <div className="flex items-center gap-1 bg-blue-500/20 text-blue-200 border-blue-400/40 px-1.5 py-0.5 rounded-lg animate-pulse" title="Cloud သို့ ချက်ချင်း Sync ပြုလုပ်နေပါသည် (Instant Cloud Sync)">
-                  <RefreshCw size={11} className="animate-spin text-blue-300" />
-                  <span className="hidden xs:inline">Syncing...</span>
-                </div>
-              ) : records.some(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed') ? (
-                <div className="flex items-center gap-1 bg-amber-500/25 text-amber-200 border-amber-400/50 px-2 py-0.5 rounded-lg animate-pulse" title="ဆာဗာသို့ မရောက်သေးသော စာရင်းများ ရှိပါသည် (နှိပ်၍ စစ်ဆေး/ပို့ဆောင်ပါ)">
-                  <Clock size={11} className="text-amber-300" />
-                  <span>{records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length} ခု မရောက်သေး</span>
-                </div>
-              ) : isCloudSynced ? (
-                <div className="flex items-center gap-1 bg-emerald-500/20 text-emerald-300 border-emerald-400/30 px-1.5 py-0.5 rounded-lg" title={lastSyncTime ? `နောက်ဆုံး Cloud Sync ဖိုင်၏ အချိန်: ${lastSyncTime}` : 'Cloud Synced'}>
-                  <CheckCircle2 size={11} className="text-emerald-400" />
-                  <span className="hidden xs:inline">Server: Synced ({records.length})</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-1 bg-amber-500/20 text-amber-300 border-amber-400/30 px-1.5 py-0.5 rounded-lg">
-                  <HardDrive size={11} className="text-amber-400" />
-                  <span className="hidden xs:inline">Saved Locally</span>
-                </div>
-              )}
-
-              {isQuotaExhausted && (
-                <span className="bg-rose-500/30 text-rose-200 border border-rose-400/50 px-1.5 py-0.5 rounded-md text-[9px] font-black flex items-center gap-1 animate-pulse">
-                  <AlertCircle size={9} />
-                  <span>Quota</span>
-                </span>
-              )}
-              <ChevronDown size={11} className={`text-slate-300 transition-transform ${isStatusPopoverOpen ? 'rotate-180' : ''}`} />
-            </button>
-
-          {/* STATUS POPOVER PANEL */}
-          <AnimatePresence>
-            {isStatusPopoverOpen && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 6 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 6 }}
-                className="absolute left-1/2 -translate-x-1/2 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-50 p-3 text-white text-xs space-y-2.5"
-              >
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <span className="font-black text-[10px] uppercase text-indigo-400 tracking-wider flex items-center gap-1">
-                    <ShieldCheck size={13} /> System & Cloud Status
-                  </span>
-                  <button onClick={() => setIsStatusPopoverOpen(false)} className="text-slate-400 hover:text-white p-0.5">
-                    <X size={13} />
-                  </button>
-                </div>
-
-                <div className="space-y-1.5 text-[11px]">
-                  <div className="flex justify-between items-center bg-slate-800/60 p-2 rounded-xl">
-                    <span className="text-slate-400 font-bold">Network Connection:</span>
-                    <span className={`font-black flex items-center gap-1 ${isOnline ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {isOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
-                      {isOnline ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between items-center bg-slate-800/60 p-2 rounded-xl">
-                    <span className="text-slate-400 font-bold">Cloud Sync State:</span>
-                    <span className={`font-black ${isCloudSynced ? 'text-emerald-400' : 'text-amber-400'}`}>
-                      {isCloudSynced ? '✓ Synced to Cloud' : '💾 Saved Locally (Cloud Sync Pending)'}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between items-center bg-slate-800/60 p-2 rounded-xl">
-                    <span className="text-slate-400 font-bold">နောက်ဆုံး Sync အချိန် (Last Sync):</span>
-                    <span className="font-mono font-bold text-indigo-300 text-[10px]">
-                      {lastSyncTime || 'မပြုလုပ်ရသေးပါ'}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between items-center bg-slate-800/60 p-2 rounded-xl">
-                    <span className="text-slate-400 font-bold">Quota Status:</span>
-                    <span className={`font-black ${isQuotaExhausted ? 'text-rose-400' : 'text-emerald-400'}`}>
-                      {isQuotaExhausted ? '⚠️ Limit Reached' : 'Normal Active'}
-                    </span>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => {
-                    setIsStatusPopoverOpen(false);
-                    setIsSyncModalOpen(true);
-                  }}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-2 px-3 rounded-xl text-[11px] uppercase flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                >
-                  <Server size={13} /> Open Server & Devices Monitor
-                </button>
-
-                {isQuotaExhausted && (
-                  <button
-                    onClick={() => {
-                      resetQuotaState();
-                      handleManualSync();
-                      setIsStatusPopoverOpen(false);
-                    }}
-                    className="w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-1.5 px-2 rounded-xl text-[10px] uppercase flex items-center justify-center gap-1 shadow-sm transition-all"
-                  >
-                    <RefreshCw size={11} /> Reset & Retry Cloud Sync
-                  </button>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* RIGHT ACTION CONTROLS & PROFILE */}
-        <div className="flex items-center gap-1.5 sm:gap-2">
-          {/* SERVER & DEVICES MONITOR BUTTON */}
+          {/* CLOUD SERVER & SYNC MONITOR SINGLE BUTTON */}
           <button
             onClick={() => setIsSyncModalOpen(true)}
-            className="bg-white/10 hover:bg-white/20 border border-white/15 px-2.5 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer text-xs font-bold text-slate-100 shadow-xs"
-            title="ဆာဗာဒေတာနှင့် ချိတ်ဆက်ထားသော စက်များ စစ်ဆေးရန် (Server & Devices Monitor)"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-black tracking-wide border backdrop-blur-sm transition-all cursor-pointer shadow-xs hover:scale-105 active:scale-95 bg-white/10 hover:bg-white/20 border-white/20 text-slate-100"
+            title="ဆာဗာဒေတာနှင့် ချိတ်ဆက်ထားသော စက်များ စစ်ဆေးရန် (Cloud Server & Devices Sync Monitor)"
           >
-            <Server size={13} className="text-cyan-300" />
-            <span className="hidden md:inline">Server & Devices</span>
-            {records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length > 0 && (
-              <span className="bg-amber-500 text-slate-900 text-[9px] font-black px-1.5 py-0.2 rounded-full">
-                {records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length}
+            <Server size={12} className="text-cyan-300" />
+            {downloadProgress?.isDownloading ? (
+              <div className="flex items-center gap-1 text-cyan-200" title={`Cloud Data Downloading (${downloadProgress.currentCol})`}>
+                <Download size={11} className="animate-bounce text-cyan-300" />
+                <span className="font-extrabold text-[10px]">Down: <span className="font-mono text-cyan-200">{downloadProgress.percent}%</span></span>
+              </div>
+            ) : !isOnline ? (
+              <div className="flex items-center gap-1 text-rose-300">
+                <WifiOff size={11} className="text-rose-400" />
+                <span className="hidden xs:inline">Offline</span>
+              </div>
+            ) : isAutoSyncing ? (
+              <div className="flex items-center gap-1 text-blue-200 animate-pulse" title="Cloud သို့ ချက်ချင်း Sync ပြုလုပ်နေပါသည်">
+                <RefreshCw size={11} className="animate-spin text-blue-300" />
+                <span className="hidden xs:inline">Syncing...</span>
+              </div>
+            ) : records.some(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed') ? (
+              <div className="flex items-center gap-1 text-amber-200" title="ဆာဗာသို့ မရောက်သေးသော စာရင်းများ ရှိပါသည်">
+                <Clock size={11} className="text-amber-300" />
+                <span>{records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed').length} မရောက်သေး</span>
+              </div>
+            ) : isCloudSynced ? (
+              <div className="flex items-center gap-1 text-emerald-300" title={lastSyncTime ? `နောက်ဆုံး Cloud Sync အချိန်: ${lastSyncTime}` : 'Cloud Synced'}>
+                <CheckCircle2 size={11} className="text-emerald-400" />
+                <span className="hidden xs:inline">Server: Synced ({records.length})</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 text-amber-300">
+                <HardDrive size={11} className="text-amber-400" />
+                <span className="hidden xs:inline">Saved Locally</span>
+              </div>
+            )}
+
+            {isQuotaExhausted && (
+              <span className="bg-rose-500/30 text-rose-200 border border-rose-400/50 px-1.5 py-0.5 rounded-md text-[9px] font-black flex items-center gap-1 animate-pulse">
+                <AlertCircle size={9} />
+                <span>Quota</span>
               </span>
             )}
           </button>
+
+        {/* RIGHT ACTION CONTROLS & PROFILE */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
           {/* OFFICER PROFILE AVATAR & DROPDOWN */}
           <div className="relative">
             <button
               onClick={() => {
                 setIsUserDropdownOpen(!isUserDropdownOpen);
                 setIsSettingsOpen(false);
-                setIsStatusPopoverOpen(false);
               }}
               className="bg-white/10 hover:bg-white/20 border border-white/15 px-2 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
               title="User Officer Profile"
@@ -9636,7 +7740,6 @@ export default function App() {
               onClick={() => {
                 setIsSettingsOpen(!isSettingsOpen);
                 setIsUserDropdownOpen(false);
-                setIsStatusPopoverOpen(false);
               }}
               className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-slate-200 hover:text-white transition-all cursor-pointer"
               title="Display & Cloud Settings"
@@ -9741,7 +7844,6 @@ export default function App() {
                 setIsMainMenuOpen(prev => !prev);
                 setIsUserDropdownOpen(false);
                 setIsSettingsOpen(false);
-                setIsStatusPopoverOpen(false);
               }}
               className="p-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs flex items-center gap-1.5 shadow-md border border-indigo-400/30 transition-all cursor-pointer"
               title="Main Navigation Menu"
@@ -9773,7 +7875,6 @@ export default function App() {
                       { id: 'data', label: 'Flight History (FH)', short: 'FH', icon: History },
                       { id: 'movement', label: 'Movement Logs (M)', short: 'M', icon: Truck },
                       { id: 'stillIn', label: 'Statistical Analysis (SIA)', short: 'SIA', icon: Activity },
-                      { id: 'checking', label: 'Checking Console (CHK)', short: 'CHK', icon: CheckSquare },
                       { id: 'individualSearch', label: 'Investigation Dossier (INV)', short: 'INV', icon: Search },
                       { id: 'master', label: 'Master DB Management', short: 'MD', icon: Database },
                       { id: 'tableOutput', label: 'Table Output', short: 'TO', icon: Table },
@@ -10651,7 +8752,6 @@ export default function App() {
       const target = records.find(r => r.id === id);
       setRecords(prev => prev.filter(r => r.id !== id));
       setConfirmDeleteId(null);
-      deleteRecordFromFirestore('records', id);
       if (target) {
         logActivity({
           action: 'DELETE',
@@ -10672,12 +8772,8 @@ export default function App() {
       }
       if (selectedIds.length === 0) return;
       const count = selectedIds.length;
-      const idsToDelete = [...selectedIds];
       setRecords(prev => prev.filter(r => !selectedIds.includes(r.id)));
       setSelectedIds([]);
-      idsToDelete.forEach(id => {
-        deleteRecordFromFirestore('records', id);
-      });
       logActivity({
         action: 'DELETE',
         module: 'FFE',
@@ -10781,19 +8877,6 @@ export default function App() {
                   className="btn bg-emerald-600 text-white hover:bg-emerald-700 text-[10px] font-black uppercase px-3.5 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5 transition-all"
                 >
                   <Download size={12} /> Export Excel
-                </button>
-                <button 
-                  onClick={() => setIsCounterCheckOpen(true)} 
-                  className="btn bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-black uppercase px-3.5 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5 transition-all cursor-pointer relative font-pyidaungsu"
-                  title="Passport နံပါတ်/အမည် စာရိုက်မှားယွင်းမှုများ စိစစ်ရန်"
-                >
-                  <CheckCircle2 size={13} className="text-indigo-200" />
-                  <span>Counter Check</span>
-                  {counterCheckSuspectCount > 0 && (
-                    <span className="bg-rose-500 text-white text-[9px] font-extrabold px-1.5 py-0.2 rounded-full font-mono animate-pulse">
-                      {counterCheckSuspectCount}
-                    </span>
-                  )}
                 </button>
              </div>
           </div>
@@ -11514,7 +9597,6 @@ export default function App() {
       masterData, 
       vehicleSummaries,
       dailyPdfs,
-      checkingHistory,
       dossierHistory,
       watchList,
       settings: {
@@ -11550,81 +9632,40 @@ export default function App() {
           if (p.records && Array.isArray(p.records)) {
             const restoredRecords = p.records.map((r: any) => ({
               ...r,
-              syncStatus: r.syncStatus || 'synced',
+              syncStatus: 'pending_sync',
               updatedAt: r.updatedAt || new Date().toISOString()
             }));
             setRecords(restoredRecords);
             await miniDB.set('records', restoredRecords);
-            setSyncedHash('records', restoredRecords);
-            try {
-              if (restoredRecords.length > 500) {
-                localStorage.setItem('imm_records_react', JSON.stringify(restoredRecords.slice(0, 500)));
-              } else {
-                localStorage.setItem('imm_records_react', JSON.stringify(restoredRecords));
-              }
-            } catch (err) {}
           }
           if (p.tempRecords && Array.isArray(p.tempRecords)) {
             const restoredTemp = p.tempRecords.map((r: any) => ({
               ...r,
-              syncStatus: r.syncStatus || 'synced',
+              syncStatus: 'pending_sync',
               updatedAt: r.updatedAt || new Date().toISOString()
             }));
             setTempRecords(restoredTemp);
             await miniDB.set('tempRecords', restoredTemp);
-            setSyncedHash('tempRecords', restoredTemp);
-            try {
-              if (restoredTemp.length > 500) {
-                localStorage.setItem('imm_temp_records_react', JSON.stringify(restoredTemp.slice(0, 500)));
-              } else {
-                localStorage.setItem('imm_temp_records_react', JSON.stringify(restoredTemp));
-              }
-            } catch (err) {}
           }
           if (p.masterData && Array.isArray(p.masterData)) {
             setMasterData(p.masterData);
             await miniDB.set('masterData', p.masterData);
-            setSyncedHash('masterData', p.masterData);
-            try {
-              localStorage.setItem('imm_master_react', JSON.stringify(p.masterData));
-            } catch (err) {}
           }
           if (p.vehicleSummaries && Array.isArray(p.vehicleSummaries)) {
             setVehicleSummaries(p.vehicleSummaries);
             await miniDB.set('vehicleSummaries', p.vehicleSummaries);
-            setSyncedHash('vehicleSummaries', p.vehicleSummaries);
-            try {
-              localStorage.setItem('imm_vehicle_summaries', JSON.stringify(p.vehicleSummaries));
-            } catch (err) {}
           }
           if (p.dailyPdfs && typeof p.dailyPdfs === 'object') {
             setDailyPdfs(p.dailyPdfs);
             await miniDB.set('dailyPdfs', p.dailyPdfs);
           }
-          if (p.checkingHistory && Array.isArray(p.checkingHistory)) {
-            const ch = p.checkingHistory.map((h: any) => ({
-              ...h,
-              status: h.status === 'STILL PERMITTED' ? 'STAY PERMITTED' : (h.status === 'STILL NOT PERMITTED YET' ? 'STAY NOT PERMITTED' : h.status)
-            }));
-            setCheckingHistory(ch);
-            await miniDB.set('checkingHistory', ch);
-            setSyncedHash('checkingHistory', ch);
-            try {
-              localStorage.setItem('checking_verification_history_logs_v1', JSON.stringify(ch));
-            } catch (err) {}
-          }
           if (p.dossierHistory && Array.isArray(p.dossierHistory)) {
             setDossierHistory(p.dossierHistory);
             await miniDB.set('dossierHistory', p.dossierHistory);
-            setSyncedHash('dossierHistory', p.dossierHistory);
-            try {
-              localStorage.setItem('imm_dossier_history_react', JSON.stringify(p.dossierHistory));
-            } catch (err) {}
           }
           if (p.watchList && Array.isArray(p.watchList)) {
             setWatchList(p.watchList);
             await miniDB.set('watchList', p.watchList);
-            setSyncedHash('watchList', p.watchList);
             try {
               localStorage.setItem('imm_watchlist_records_v1', JSON.stringify(p.watchList));
             } catch (e) {}
@@ -11637,11 +9678,11 @@ export default function App() {
             module: 'SYSTEM',
             officerName: cloudAuthUser?.username,
             officerRole: cloudAuthUser?.role || 'Editor',
-            details: `Restored Full System from JSON Backup file (${(p.records || []).length} records)`
+            details: `Restored Full System from JSON Backup file`
           });
-          showToast(`✓ စနစ်မှတ်တမ်းများ ပြန်လည်တင်သွင်းပြီးပါပြီ (${(p.records || []).length} Records Restored Successfully)`);
+          showToast("COMBINED SYSTEM RESTORED SUCCESSFULLY!");
         } else {
-          showToast("⚠️ Backup ဖိုင် တည်ဆောက်ပုံ မမှန်ကန်ပါ");
+          showToast("INVALID COMBINED BACKUP STRUCTURE");
         }
       } catch (err) { 
         alert("Invalid Combined Backup File Structure"); 
@@ -11653,28 +9694,6 @@ export default function App() {
 
   return (
     <>
-    {/* Global Autocomplete Datalists specifically for the Checking tab */}
-    <datalist id="checkingStayList">
-      {masterData.filter(m => m.type === 'Stay').map(m => <option key={m.id} value={m.name} />)}
-    </datalist>
-    <datalist id="checkingStayDescList">
-      {Array.from(new Set(
-        (masterData || []).filter(m => m.type === 'Stay' && m.linkedValue).map(m => m.linkedValue as string)
-          .concat(records.filter(r => r.stayDescription).map(r => r.stayDescription as string))
-      )).map((desc, idx) => (
-        <option key={desc + '_' + idx} value={desc} />
-      ))}
-    </datalist>
-    <datalist id="checkingPermitDescriptionList">
-      {masterData.filter(m => m.type === 'PermitDescription').map(m => <option key={m.id} value={m.name} />)}
-    </datalist>
-    <datalist id="checkingOfficialList">
-      {masterData.filter(m => m.type === 'Official').map(m => <option key={m.id} value={m.name} />)}
-    </datalist>
-    <datalist id="checkingTitleList">
-      {masterData.filter(m => m.type === 'Title').map(m => <option key={m.id} value={m.name} />)}
-    </datalist>
-
     <div className="min-h-screen bg-slate-50 transition-colors duration-300 print:hidden">
       <Toast message={toast.message} visible={toast.visible} />
       {renderNav()}
@@ -11758,12 +9777,13 @@ export default function App() {
                         value={loginName}
                         onChange={(e) => setLoginName(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-                        className="w-full py-5 px-8 rounded-2xl bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 transition-all outline-none text-center font-black text-xl" 
+                        className="w-full py-5 px-8 rounded-2xl bg-slate-50 border-2 border-slate-100 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 transition-all outline-none text-center font-black text-xl uppercase" 
                         placeholder="OFFICER NAME"
+                        autoFocus
                       />
                       <button 
                         onClick={handleLogin}
-                        className="w-full py-5 px-8 rounded-2xl bg-[#2C6CB0] text-white font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95 flex items-center justify-center gap-3"
+                        className="w-full py-5 px-8 rounded-2xl bg-[#2C6CB0] text-white font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95 flex items-center justify-center gap-3 cursor-pointer"
                       >
                         <LogIn size={20} />
                         Access System Control
@@ -11856,21 +9876,6 @@ export default function App() {
             setActivePrintPreview={setActivePrintPreview}
           />
         )}
-        {activeTab === 'checking' && (
-          <PermitManagementConsole 
-            records={records} 
-            tempRecords={tempRecords}
-            setRecords={setRecords}
-            setTempRecords={setTempRecords}
-            showToast={showToast}
-            movementMap={movementMap}
-            currentUser={currentUser}
-            cloudAuthUser={cloudAuthUser}
-            isViewer={isViewer}
-            masterData={masterData}
-            setActivePrintPreview={setActivePrintPreview}
-          />
-        )}
         {activeTab === 'daily' && (
           <DailyReport 
             records={records} 
@@ -11887,8 +9892,6 @@ export default function App() {
             setRecords={setRecords}
             tempRecords={tempRecords}
             setTempRecords={setTempRecords}
-            checkingHistory={checkingHistory} 
-            setCheckingHistory={setCheckingHistory}
             dailyPdfs={dailyPdfs} 
             showToast={showToast} 
             setActivePrintPreview={setActivePrintPreview}
@@ -11914,10 +9917,6 @@ export default function App() {
             setActiveTab={setActiveTab}
             setRecords={setRecords}
             setTempRecords={setTempRecords}
-            handleManualSync={handleManualSync}
-            handleFetchDataFromCloud={handleFetchDataFromCloud}
-            records={records}
-            tempRecords={tempRecords}
           />
         )}
         {activeTab === 'tableOutput' && (
@@ -11947,7 +9946,6 @@ export default function App() {
             setActivePrintPreview={setActivePrintPreview} 
             showToast={showToast} 
             movementMap={movementMap}
-            checkingHistory={checkingHistory}
             dossierHistory={dossierHistory}
             masterData={masterData}
             tempRecords={tempRecords}
@@ -11958,7 +9956,6 @@ export default function App() {
             records={records} 
             tempRecords={tempRecords}
             movementMap={movementMap} 
-            checkingHistory={checkingHistory}
             masterData={masterData}
             currentUser={currentUser} 
             showToast={showToast} 
@@ -11979,7 +9976,6 @@ export default function App() {
             watchList={watchList}
             masterData={masterData}
             vehicleSummaries={vehicleSummaries}
-            checkingHistory={checkingHistory}
           />
         )}
       </main>
@@ -13602,104 +11598,6 @@ export default function App() {
       </div>
     )}
 
-    {/* Dedicated Hidden Printable Container for Checking Verification Lists in Print Media */}
-    {checkingPrintData && (
-      <div className="hidden print:block bg-white p-8 text-black min-h-screen w-full text-xs font-sans print-content leading-relaxed">
-        <div className="border-b-4 border-gray-900 pb-4 mb-6 text-center">
-          <h1 className="text-lg font-black uppercase text-gray-900">{checkingPrintData.title}</h1>
-          <p className="text-[9px] text-gray-400 font-mono uppercase tracking-wide">
-            GENERATED COPY TIMESTAMP: {new Date().toLocaleString()} • SYSTEM REGISTER COPY
-          </p>
-        </div>
-
-        <table className="w-full text-left text-xs border border-black border-collapse">
-          <thead>
-            <tr className="bg-gray-100 uppercase text-[8px] font-black">
-              <th className="p-2 border border-black text-center">#</th>
-              <th className="p-2 border border-black">Passport & Visitor Name</th>
-              <th className="p-2 border border-black">Nationality</th>
-              {checkingPrintData.type === 'CHECKED_HISTORY' ? (
-                <>
-                  <th className="p-2 border border-black">Confirmed Stay Address Location & Detail Address/Description</th>
-                  <th className="p-2 border border-black text-center">Verified Status</th>
-                  <th className="p-2 border border-black">Officer Details</th>
-                </>
-              ) : (
-                <>
-                  <th className="p-2 border border-black">Expected Stay Address & Detail Address/Description</th>
-                  <th className="p-2 border border-black">Stay Schedule</th>
-                  <th className="p-2 border border-black text-center">Verification Stamp / Sign</th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {checkingPrintData.data.map((h: any, idx: number) => {
-              const isHist = checkingPrintData.type === 'CHECKED_HISTORY';
-              const pNo = isHist ? h.passport : h.p;
-              const name = isHist ? h.fullname : h.n;
-              const nat = isHist ? h.nationality : h.nat;
-              const address = isHist ? h.confirmedAddress : h.loc;
-              const addressDesc = isHist 
-                ? h.confirmedStayDescription 
-                : (masterData.find(m => m.type === 'Stay' && m.name.toLowerCase() === h.loc.toLowerCase())?.linkedValue || h.stayDescription);
-
-              return (
-                <tr key={idx} className="align-top border-b border-black">
-                  <td className="p-2 border border-black text-center font-bold">{idx + 1}</td>
-                  <td className="p-2 border border-black leading-tight">
-                    <div className="font-extrabold font-mono uppercase">{pNo}</div>
-                    <div className="font-bold text-gray-800 uppercase mt-0.5">{name}</div>
-                  </td>
-                  <td className="p-2 border border-black font-black uppercase text-gray-700">{nat}</td>
-                  
-                  {isHist ? (
-                    <>
-                      <td className="p-2 border border-black leading-tight">
-                        <div className="font-extrabold text-gray-900">{address}</div>
-                        {addressDesc && <div className="text-[9px] text-gray-500 italic mt-0.5">🏡 Detail: {addressDesc}</div>}
-                      </td>
-                      <td className="p-2 border border-black text-center font-black">
-                        <div className="text-emerald-800">{h.status}</div>
-                        <div className="text-[8px] text-gray-400 font-mono mt-1">{h.checkDate}</div>
-                      </td>
-                      <td className="p-2 border border-black font-bold leading-tight">
-                        <div>{h.officerName}</div>
-                        <div className="text-[8px] text-gray-400 uppercase font-black">{h.officerTitle}</div>
-                      </td>
-                    </>
-                  ) : (
-                    <>
-                      <td className="p-2 border border-black leading-tight">
-                        <div className="font-extrabold text-gray-950">{address}</div>
-                        {addressDesc && <div className="text-[9px] text-gray-500 italic mt-0.5">🏡 Detail: {addressDesc}</div>}
-                      </td>
-                      <td className="p-2 border border-black leading-tight font-mono">
-                        <div>{h.start} to {h.end}</div>
-                        <div className="text-[9px] text-indigo-750 font-black mt-1 uppercase">Rem: {getLiveRemainingDays(h.end)} Days</div>
-                      </td>
-                      <td className="p-2 border border-black text-center bg-gray-50/30 min-w-[140px]">
-                        <div className="h-14 flex items-center justify-center border border-dashed border-gray-400 rounded-md mb-1 bg-white">
-                          <span className="text-[7px] text-gray-400 uppercase tracking-widest font-black font-mono">PHYSICAL STAMP HERE</span>
-                        </div>
-                        <span className="text-[7.5px] text-gray-600 uppercase font-bold">Immig. Inspector Verified</span>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-
-        {/* Footer for checklist */}
-        <div className="mt-12 pt-8 border-t border-dashed border-black text-center text-[10px] text-gray-400 leading-normal">
-          <p>Myeik Immigration Department • Second Division Stay Verification Dossier</p>
-          <p className="mt-1 font-bold">CONFIDENTIAL • FOR OFFICIAL USE ONLY</p>
-        </div>
-      </div>
-    )}
-
     {/* Initial Startup & Data Loading Waiting Screen (Both Offline and Online Modes) */}
     <AnimatePresence>
       {(!isDBCardLoaded || isInitialSyncing) && (
@@ -13871,16 +11769,6 @@ export default function App() {
       </div>
     )}
 
-    {/* Counter Check Modal */}
-    <CounterCheckModal
-      isOpen={isCounterCheckOpen}
-      onClose={() => setIsCounterCheckOpen(false)}
-      records={records}
-      setRecords={setRecords}
-      showToast={showToast}
-      onEditRecord={startEdit}
-    />
-
     {/* Cloud Server & Devices Sync Hub Modal */}
     <CloudSyncStatusModal
       isOpen={isSyncModalOpen}
@@ -13893,9 +11781,11 @@ export default function App() {
       cloudAuthUser={cloudAuthUser}
       deviceSessions={deviceSessions}
       records={records}
-      masterDataCount={masterData.length}
-      tempRecordsCount={tempRecords.length}
-      checkingHistoryCount={checkingHistory.length}
+      tempRecords={tempRecords}
+      masterData={masterData}
+      vehicleSummaries={vehicleSummaries}
+      dossierHistory={dossierHistory}
+      watchList={watchList}
       onManualSync={handleManualSync}
       onFetchFromCloud={handleFetchDataFromCloud}
       onResetQuota={resetQuotaState}

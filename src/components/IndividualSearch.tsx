@@ -27,9 +27,8 @@ import {
   Eye,
   Building2
 } from 'lucide-react';
-import { ImmRecord, MasterItem, DossierRecord, CheckingHistoryEntry, MovementData, normalizePermitStatus, PermitStatus } from '../types';
+import { ImmRecord, MasterItem, DossierRecord, MovementData, normalizePermitStatus, PermitStatus } from '../types';
 import { logActivity } from '../utils/activityLogger';
-import { StayCheckConsole } from './StayCheckConsole';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -39,8 +38,6 @@ interface IndividualSearchProps {
   setRecords?: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
   tempRecords?: ImmRecord[];
   setTempRecords?: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
-  checkingHistory: any[];
-  setCheckingHistory?: React.Dispatch<React.SetStateAction<CheckingHistoryEntry[]>>;
   dailyPdfs: Record<string, { base64: string; name: string }>;
   showToast: (msg: string) => void;
   setActivePrintPreview?: (preview: any) => void;
@@ -160,8 +157,6 @@ export const IndividualSearch = ({
   setRecords,
   tempRecords,
   setTempRecords,
-  checkingHistory,
-  setCheckingHistory,
   dailyPdfs,
   showToast,
   setActivePrintPreview,
@@ -175,7 +170,6 @@ export const IndividualSearch = ({
   passportToLatestInfo = {},
   isViewer
 }: IndividualSearchProps) => {
-  const [invSubTab, setInvSubTab] = useState<'STAY_CHECK' | 'DOSSIER'>('STAY_CHECK');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Collect all selectable stay addresses from Master Data and existing records
@@ -1083,9 +1077,7 @@ export const IndividualSearch = ({
         .filter(r => r.passport.trim().toUpperCase() === pp.toUpperCase())
         .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
-      const personCheckingHistory = checkingHistory
-        .filter(h => h.passport.trim().toUpperCase() === pp.toUpperCase())
-        .sort((a, b) => b.id - a.id);
+      const personCheckingHistory: any[] = [];
 
       htmlContent += `
         <div class="dossier-header">
@@ -1623,9 +1615,7 @@ export const IndividualSearch = ({
         .filter(r => r.passport.trim().toUpperCase() === pp.toUpperCase())
         .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
-      const personCheckingHistory = checkingHistory
-        .filter(h => h.passport.trim().toUpperCase() === pp.toUpperCase())
-        .sort((a, b) => b.id - a.id);
+      const personCheckingHistory: any[] = [];
 
       htmlContent += `
         <div class="dossier-header">
@@ -1925,55 +1915,6 @@ export const IndividualSearch = ({
         </div>
       )}
 
-      {/* INV Navigation Sub-Tabs */}
-      <div className="flex items-center gap-2 p-1.5 bg-slate-100/90 rounded-2xl border border-slate-200 no-print shadow-xs">
-        <button
-          onClick={() => setInvSubTab('STAY_CHECK')}
-          className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
-            invSubTab === 'STAY_CHECK'
-              ? 'bg-indigo-900 text-white shadow-md'
-              : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
-          }`}
-        >
-          <Building2 size={16} />
-          <span>🏢 Stay Check (နေရာအလိုက် နေထိုင်မှုစစ်ဆေးခြင်း)</span>
-          <span className="text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold">
-            NEW
-          </span>
-        </button>
-
-        <button
-          onClick={() => setInvSubTab('DOSSIER')}
-          className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
-            invSubTab === 'DOSSIER'
-              ? 'bg-indigo-900 text-white shadow-md'
-              : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
-          }`}
-        >
-          <Search size={16} />
-          <span>🔍 Individual Dossier & Profiler (လူပုဂ္ဂိုလ်အလိုက် စုံစမ်းစစ်ဆေးမှု)</span>
-        </button>
-      </div>
-
-      {invSubTab === 'STAY_CHECK' ? (
-        <StayCheckConsole
-          records={records}
-          setRecords={setRecords}
-          tempRecords={tempRecords}
-          setTempRecords={setTempRecords}
-          checkingHistory={checkingHistory}
-          setCheckingHistory={setCheckingHistory}
-          masterData={masterData}
-          movementMap={movementMap}
-          passportToLatestInfo={passportToLatestInfo}
-          currentUser={currentUser}
-          cloudAuthUser={cloudAuthUser}
-          isViewer={isViewer}
-          showToast={showToast}
-          setActivePrintPreview={setActivePrintPreview}
-        />
-      ) : (
-        <>
           {/* 1. Header & Quick Group Search Card */}
           <div className="card shadow-xl border-t-8 border-indigo-900 bg-white p-4 sm:p-6 no-print">
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 sm:gap-6">
@@ -2622,9 +2563,7 @@ export const IndividualSearch = ({
                 .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
               // Checking history logs for this person
-              const personCheckingHistory = checkingHistory
-                .filter(h => h.passport.trim().toUpperCase() === pp.toUpperCase())
-                .sort((a, b) => b.id - a.id);
+              const personCheckingHistory: any[] = [];
 
               const latestCheck = personCheckingHistory[0] || null;
 
@@ -3279,9 +3218,7 @@ export const IndividualSearch = ({
                       .filter(r => r.passport.trim().toUpperCase() === pp.toUpperCase())
                       .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
-                    const personCheckingHistory = checkingHistory
-                      .filter(h => h.passport.trim().toUpperCase() === pp.toUpperCase())
-                      .sort((a, b) => b.id - a.id);
+                    const personCheckingHistory: any[] = [];
 
                     return (
                       <div key={pp} className={`space-y-6 ${idx > 0 ? 'print-page-break pt-6 border-t border-dashed border-gray-300' : ''}`}>
@@ -3550,9 +3487,7 @@ export const IndividualSearch = ({
               .filter(r => r.passport.trim().toUpperCase() === pp.toUpperCase())
               .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
-            const personCheckingHistory = checkingHistory
-              .filter(h => h.passport.trim().toUpperCase() === pp.toUpperCase())
-              .sort((a, b) => b.id - a.id);
+            const personCheckingHistory: any[] = [];
 
             return (
               <div key={pp} className={`space-y-6 ${idx > 0 ? 'print-page-break pt-6 border-t border-dashed border-gray-300' : ''}`}>
@@ -3856,9 +3791,7 @@ export const IndividualSearch = ({
             .filter(r => r.passport.trim().toUpperCase() === pp.toUpperCase())
             .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp));
 
-          const personCheckingHistory = checkingHistory
-            .filter(h => h.passport.trim().toUpperCase() === pp.toUpperCase())
-            .sort((a, b) => b.id - a.id);
+          const personCheckingHistory: any[] = [];
 
           const pageNum = selectedPassports.length > 1 ? idx + 2 : idx + 1;
 
@@ -4026,9 +3959,6 @@ export const IndividualSearch = ({
           );
         })}
       </div>
-        </>
-      )}
-
     </div>
   );
 };

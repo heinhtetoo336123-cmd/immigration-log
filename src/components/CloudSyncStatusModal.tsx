@@ -1,28 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Server, 
+  Cloud, 
+  RefreshCw, 
+  Smartphone, 
+  Laptop, 
+  Tablet, 
+  CheckCircle2, 
+  Clock, 
+  Database, 
   UploadCloud, 
   DownloadCloud, 
   X, 
-  CheckCircle2, 
-  AlertCircle, 
-  Laptop, 
-  Smartphone, 
-  Tablet, 
-  RefreshCw,
-  Trash2,
-  ShieldCheck,
+  Server,
+  Layers,
+  FileSpreadsheet,
   ShieldAlert,
-  Zap
+  Plane,
+  Truck,
+  Check
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { 
-  CloudStats, 
-  fetchCloudCollectionStats, 
-  getAllDeletedQueues, 
-  purgeDeletedRecordsFromFirestore 
-} from '../lib/firebase';
-import { ImmRecord } from '../types';
+import { CloudStats, fetchCloudCollectionStats } from '../lib/firebase';
+import { ImmRecord, MasterItem, VehicleSummary, DossierRecord, WatchListRecord } from '../types';
 
 interface CloudSyncStatusModalProps {
   isOpen: boolean;
@@ -40,11 +39,13 @@ interface CloudSyncStatusModalProps {
   } | null;
   deviceSessions: any[];
   records: ImmRecord[];
-  masterDataCount: number;
-  tempRecordsCount: number;
-  checkingHistoryCount: number;
+  tempRecords?: ImmRecord[];
+  masterData?: MasterItem[];
+  vehicleSummaries?: VehicleSummary[];
+  dossierHistory?: DossierRecord[];
+  watchList?: WatchListRecord[];
   onManualSync: () => Promise<void>;
-  onFetchFromCloud: (force?: boolean) => Promise<void>;
+  onFetchFromCloud: (force?: boolean, silent?: boolean) => Promise<void>;
   onResetQuota?: () => void;
 }
 
@@ -52,27 +53,30 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
   isOpen,
   onClose,
   isOnline,
+  isAutoSyncing,
+  isCloudSynced,
   lastSyncTime,
   isQuotaExhausted,
   cloudAuthUser,
-  deviceSessions,
-  records,
+  deviceSessions = [],
+  records = [],
+  tempRecords = [],
+  masterData = [],
+  vehicleSummaries = [],
+  dossierHistory = [],
+  watchList = [],
   onManualSync,
-  onFetchFromCloud,
-  onResetQuota
+  onFetchFromCloud
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'pending' | 'deletions' | 'devices'>('overview');
   const [cloudStats, setCloudStats] = useState<CloudStats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [isSyncingAction, setIsSyncingAction] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [deletedQueues, setDeletedQueues] = useState<Record<string, string[]>>({});
-  const [isPurgingDeletions, setIsPurgingDeletions] = useState(false);
+  const [activeView, setActiveView] = useState<'grid' | 'devices'>('grid');
 
-  const pendingRecords = records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed');
-  const syncedCount = records.length - pendingRecords.length;
-
-  const totalDeletedPending: number = (Object.values(deletedQueues) as string[][]).reduce((acc: number, curr: string[]) => acc + (curr?.length || 0), 0);
+  // Compute pending vs synced records
+  const pendingRecords = useMemo(() => {
+    return records.filter(r => r.syncStatus === 'pending_sync' || r.syncStatus === 'upload_failed');
+  }, [records]);
 
   const loadStats = async () => {
     if (!isOnline) return;
@@ -80,9 +84,8 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
     try {
       const stats = await fetchCloudCollectionStats();
       if (stats) setCloudStats(stats);
-      setDeletedQueues(getAllDeletedQueues());
-    } catch (e) {
-      console.warn("Could not load cloud stats:", e);
+    } catch {
+      // quiet catch
     } finally {
       setIsLoadingStats(false);
     }
@@ -91,391 +94,280 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       loadStats();
-      setDeletedQueues(getAllDeletedQueues());
-      setStatusMessage(null);
     }
   }, [isOpen, isOnline]);
 
-  const handleUploadAll = async () => {
+  const handleTriggerUpload = async () => {
     if (isSyncingAction || !isOnline) return;
     setIsSyncingAction(true);
-    setStatusMessage("Uploading collections to server...");
     try {
       await onManualSync();
       await loadStats();
-      setDeletedQueues(getAllDeletedQueues());
-      setStatusMessage("✓ Upload completed successfully.");
-    } catch (err: any) {
-      setStatusMessage(`Upload failed: ${err?.message || 'Server error'}`);
     } finally {
       setIsSyncingAction(false);
     }
   };
 
-  const handlePullLatest = async () => {
+  const handleTriggerDownload = async () => {
     if (isSyncingAction || !isOnline) return;
     setIsSyncingAction(true);
-    setStatusMessage("Fetching latest data from server...");
     try {
-      await onFetchFromCloud(true);
+      await onFetchFromCloud(true, false);
       await loadStats();
-      setDeletedQueues(getAllDeletedQueues());
-      setStatusMessage("✓ Download completed successfully.");
-    } catch (err: any) {
-      setStatusMessage(`Download failed: ${err?.message || 'Server error'}`);
     } finally {
       setIsSyncingAction(false);
-    }
-  };
-
-  const handlePurgeAllDeletions = async () => {
-    if (isPurgingDeletions || !isOnline) return;
-    setIsPurgingDeletions(true);
-    setStatusMessage("Purging deleted records from Cloud Server...");
-    try {
-      let totalPurged = 0;
-      const collections = Object.keys(deletedQueues);
-      for (const col of collections) {
-        const count = await purgeDeletedRecordsFromFirestore(col);
-        totalPurged += count;
-      }
-      await loadStats();
-      setDeletedQueues(getAllDeletedQueues());
-      setStatusMessage(`✓ Purged ${totalPurged} deleted record(s) from Cloud Server.`);
-    } catch (err: any) {
-      setStatusMessage(`Purge failed: ${err?.message || 'Server error'}`);
-    } finally {
-      setIsPurgingDeletions(false);
     }
   };
 
   const getDeviceIcon = (devName?: string) => {
     const n = (devName || '').toLowerCase();
     if (n.includes('phone') || n.includes('iphone') || n.includes('android') || n.includes('mobile')) {
-      return <Smartphone size={14} className="text-slate-400" />;
+      return <Smartphone size={13} className="text-emerald-400" />;
     }
     if (n.includes('pad') || n.includes('tablet')) {
-      return <Tablet size={14} className="text-slate-400" />;
+      return <Tablet size={13} className="text-cyan-400" />;
     }
-    return <Laptop size={14} className="text-slate-400" />;
+    return <Laptop size={13} className="text-indigo-400" />;
   };
 
-  const isUserViewer = cloudAuthUser?.role === 'Viewer';
+  // 6 Compact Data Modules
+  const modules = useMemo(() => [
+    {
+      id: 'records',
+      title: 'FFE & FH Logs',
+      icon: Plane,
+      accent: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20',
+      local: records.length,
+      cloud: cloudStats?.recordsCount ?? '-',
+      pending: pendingRecords.length,
+      synced: isOnline && cloudStats ? records.length === cloudStats.recordsCount && pendingRecords.length === 0 : isCloudSynced
+    },
+    {
+      id: 'tempRecords',
+      title: 'Movement (M)',
+      icon: Truck,
+      accent: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+      local: tempRecords.length,
+      cloud: cloudStats?.tempRecordsCount ?? '-',
+      pending: 0,
+      synced: isOnline && cloudStats ? tempRecords.length === cloudStats.tempRecordsCount : isCloudSynced
+    },
+    {
+      id: 'masterData',
+      title: 'Master DB (MD)',
+      icon: Database,
+      accent: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+      local: masterData.length,
+      cloud: cloudStats?.masterDataCount ?? '-',
+      pending: 0,
+      synced: isOnline && cloudStats ? masterData.length === cloudStats.masterDataCount : isCloudSynced
+    },
+    {
+      id: 'vehicleSummaries',
+      title: 'Table Output (TO)',
+      icon: Layers,
+      accent: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+      local: vehicleSummaries.length,
+      cloud: cloudStats?.vehicleSummariesCount ?? '-',
+      pending: 0,
+      synced: isOnline && cloudStats ? vehicleSummaries.length === cloudStats.vehicleSummariesCount : isCloudSynced
+    },
+    {
+      id: 'dossierHistory',
+      title: 'Dossier (INV)',
+      icon: FileSpreadsheet,
+      accent: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
+      local: dossierHistory.length,
+      cloud: cloudStats?.dossierHistoryCount ?? '-',
+      pending: 0,
+      synced: isOnline && cloudStats ? dossierHistory.length === cloudStats.dossierHistoryCount : isCloudSynced
+    },
+    {
+      id: 'watchList',
+      title: 'Watch-list (WL)',
+      icon: ShieldAlert,
+      accent: 'text-rose-400 bg-rose-500/10 border-rose-500/20',
+      local: watchList.length,
+      cloud: cloudStats?.watchListCount ?? '-',
+      pending: 0,
+      synced: isOnline && cloudStats ? watchList.length === cloudStats.watchListCount : isCloudSynced
+    }
+  ], [records, tempRecords, masterData, vehicleSummaries, dossierHistory, watchList, cloudStats, pendingRecords, isOnline, isCloudSynced]);
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs">
       <motion.div
-        initial={{ opacity: 0, scale: 0.97 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.97 }}
-        className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col shadow-xl overflow-hidden text-slate-200"
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden text-slate-100 flex flex-col"
       >
-        {/* Minimalist Header */}
-        <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        {/* Compact Clean Header */}
+        <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <Server size={18} className="text-slate-400" />
-            <h3 className="text-sm font-bold uppercase tracking-wide text-white">
-              Cloud Server & Sync Monitor
-            </h3>
-            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
-              isOnline 
-                ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60' 
-                : 'bg-rose-950/60 text-rose-400 border-rose-800/60'
-            }`}>
-              {isOnline ? 'Online' : 'Offline'}
-            </span>
+            <div className="w-7 h-7 rounded-lg bg-indigo-600/30 text-indigo-400 flex items-center justify-center border border-indigo-500/30">
+              <Server size={15} />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-black uppercase tracking-wider text-white">
+                  Cloud Sync Monitor
+                </span>
+                <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
+              </div>
+              <span className="text-[10px] text-slate-400 font-medium">
+                {cloudAuthUser?.username || 'OFFICER'} • {cloudAuthUser?.deviceName || 'Device'}
+              </span>
+            </div>
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-          >
-            <X size={16} />
-          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setActiveView(activeView === 'grid' ? 'devices' : 'grid')}
+              className="text-[10px] font-bold px-2 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
+            >
+              <Smartphone size={11} />
+              <span>{activeView === 'grid' ? `Devices (${deviceSessions.length})` : 'Show Grid'}</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
 
-        {/* Minimalist Tab Bar */}
-        <div className="flex border-b border-slate-800 bg-slate-900/80 px-4 pt-2 gap-2 text-xs font-semibold overflow-x-auto">
-          {[
-            { id: 'overview', label: 'Overview' },
-            { id: 'pending', label: `Pending (${pendingRecords.length})` },
-            { id: 'deletions', label: `Deletions (${totalDeletedPending})` },
-            { id: 'devices', label: `Devices (${deviceSessions.length})` }
-          ].map(tab => (
+        {/* Action Toolbar */}
+        <div className="p-3 bg-slate-800/40 border-b border-slate-800 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono">
+            <span>Sync:</span>
+            <span className="font-bold text-indigo-300">{lastSyncTime || 'Active'}</span>
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`pb-2 px-3 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === tab.id
-                  ? 'border-indigo-500 text-white font-bold'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              onClick={loadStats}
+              disabled={isLoadingStats || !isOnline}
+              title="Refresh Cloud Stats"
+              className="text-indigo-400 hover:text-indigo-300 p-0.5 rounded transition-colors cursor-pointer"
+            >
+              <RefreshCw size={10} className={isLoadingStats ? "animate-spin" : ""} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleTriggerUpload}
+              disabled={isSyncingAction || !isOnline}
+              className={`py-1.5 px-2.5 rounded-lg font-black uppercase text-[10px] flex items-center gap-1 shadow-xs transition-all ${
+                !isOnline
+                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                  : isSyncingAction
+                  ? 'bg-indigo-700 text-white cursor-wait'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'
               }`}
             >
-              {tab.label}
+              <UploadCloud size={12} className={isSyncingAction ? "animate-bounce" : ""} />
+              <span>Upload Local</span>
             </button>
-          ))}
+
+            <button
+              onClick={handleTriggerDownload}
+              disabled={isSyncingAction || !isOnline}
+              className={`py-1.5 px-2.5 rounded-lg font-black uppercase text-[10px] flex items-center gap-1 border transition-all ${
+                !isOnline
+                  ? 'bg-slate-800 text-slate-600 border-slate-700 cursor-not-allowed'
+                  : 'bg-slate-800 hover:bg-slate-700 text-cyan-300 border-slate-700 hover:border-cyan-500/40 cursor-pointer'
+              }`}
+            >
+              <DownloadCloud size={12} />
+              <span>Pull Cloud</span>
+            </button>
+          </div>
         </div>
 
-        {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
-          {activeTab === 'overview' && (
-            <div className="space-y-4">
-              {/* Stat Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Local Records</span>
-                  <div className="text-lg font-bold text-white font-mono mt-0.5">{records.length}</div>
-                </div>
-                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Synced</span>
-                  <div className="text-lg font-bold text-emerald-400 font-mono mt-0.5">{syncedCount}</div>
-                </div>
-                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Pending Sync</span>
-                  <div className={`text-lg font-bold font-mono mt-0.5 ${pendingRecords.length > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
-                    {pendingRecords.length}
-                  </div>
-                </div>
-                <div className="bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Cloud Server</span>
-                  <div className="text-lg font-bold text-slate-200 font-mono mt-0.5">
-                    {isLoadingStats ? '...' : (cloudStats?.recordsCount ?? '-')}
-                  </div>
-                </div>
-              </div>
-
-              {/* Delete Condition & Sync Effect Panel */}
-              <div className="bg-slate-800/30 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Trash2 size={14} className="text-rose-400" />
-                    <span className="font-bold text-slate-200 uppercase tracking-wide text-[11px]">
-                      Delete Condition & Cloud Sync Effect
-                    </span>
-                  </div>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                    totalDeletedPending > 0 
-                      ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60' 
-                      : 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/60'
-                  }`}>
-                    {totalDeletedPending > 0 ? `${totalDeletedPending} Pending Purge` : 'Cloud Purged'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-300">
-                  <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 space-y-1">
-                    <div className="flex items-center gap-1.5 text-slate-200 font-semibold">
-                      <Zap size={12} className="text-amber-400" /> Direct Cloud Deletion
-                    </div>
-                    <p className="text-slate-400 text-[10.5px] leading-relaxed">
-                      ဖျက်လိုက်သည့် Record အား Firestore မှ တိုက်ရိုက်ထုတ်ပယ်ပြီး Cloud Count အား ချက်ချင်း လျှော့ချပါသည် (ဥပမာ 1748 → 1747)။
-                    </p>
-                  </div>
-
-                  <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80 space-y-1">
-                    <div className="flex items-center gap-1.5 text-slate-200 font-semibold">
-                      <ShieldCheck size={12} className="text-emerald-400" /> Role & Offline Protection
-                    </div>
-                    <p className="text-slate-400 text-[10.5px] leading-relaxed">
-                      Superadmin/Editor သာ ဖျက်ခွင့်ရှိပြီး Offline ဖျက်မှုများကို Queue ထဲသိမ်းကာ Cloud သို့ ချိတ်ဆက်ချိန်တွင် အလိုအလျောက် Purge ပြုလုပ်ပေးပါသည်။
-                    </p>
-                  </div>
-                </div>
-
-                {isUserViewer && (
-                  <div className="p-2 bg-amber-950/30 border border-amber-800/40 rounded-lg text-amber-300 flex items-center gap-2 text-[10.5px]">
-                    <ShieldAlert size={13} className="shrink-0 text-amber-400" />
-                    <span>လက်ရှိအကောင့်မှာ Viewer ဖြစ်သောကြောင့် လုံခြုံရေးအရ Record ဖျက်ပစ်ခွင့် ပိတ်ထားပါသည်</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Status Message or Quota Alert */}
-              {isQuotaExhausted && (
-                <div className="p-3 bg-rose-950/30 border border-rose-800/50 rounded-xl text-rose-300 flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle size={14} className="shrink-0 text-rose-400" />
-                    <span>Quota Limit Reached. Data is safely stored in local IndexedDB.</span>
-                  </div>
-                  {onResetQuota && (
-                    <button 
-                      onClick={onResetQuota}
-                      className="px-2 py-1 bg-rose-900/60 hover:bg-rose-800 text-white rounded text-[10px] font-bold cursor-pointer"
-                    >
-                      Reset
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {statusMessage && (
-                <div className="p-2.5 bg-slate-800/60 border border-slate-700/60 rounded-xl text-slate-300 text-[11px]">
-                  {statusMessage}
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="space-y-2 pt-1">
-                <div className="flex flex-col sm:flex-row gap-2.5">
-                  <button
-                    onClick={handleUploadAll}
-                    disabled={isSyncingAction || !isOnline}
-                    className={`flex-1 py-2.5 px-4 rounded-xl font-bold uppercase text-xs flex items-center justify-center gap-2 transition-all ${
-                      !isOnline
-                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-800'
-                        : isSyncingAction
-                        ? 'bg-indigo-700 text-white cursor-wait'
-                        : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer shadow-xs'
-                    }`}
+        {/* Body Content */}
+        <div className="p-3">
+          {activeView === 'grid' ? (
+            /* Compact 3-Column / 2-Row Matrix */
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {modules.map((m) => {
+                const Icon = m.icon;
+                return (
+                  <div
+                    key={m.id}
+                    className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-2.5 flex flex-col justify-between hover:border-slate-600 transition-colors"
                   >
-                    <UploadCloud size={15} />
-                    <span>{isSyncingAction ? "Processing..." : "UPLOAD ALL TO CLOUD SERVER"}</span>
-                  </button>
-
-                  <button
-                    onClick={handlePullLatest}
-                    disabled={isSyncingAction || !isOnline}
-                    className={`flex-1 py-2.5 px-4 rounded-xl font-bold uppercase text-xs flex items-center justify-center gap-2 border transition-all ${
-                      !isOnline
-                        ? 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed'
-                        : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 cursor-pointer'
-                    }`}
-                  >
-                    <DownloadCloud size={15} />
-                    <span>PULL LATEST FROM SERVER</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
-                  <span>Last Sync: {lastSyncTime || 'None'}</span>
-                  <button
-                    onClick={loadStats}
-                    disabled={isLoadingStats || !isOnline}
-                    className="hover:text-slate-300 flex items-center gap-1 cursor-pointer"
-                  >
-                    <RefreshCw size={11} className={isLoadingStats ? "animate-spin" : ""} /> Check Cloud Info
-                  </button>
-                </div>
-              </div>
-
-              {/* Current Device Summary */}
-              <div className="border-t border-slate-800/80 pt-3 flex items-center justify-between text-[11px] text-slate-400">
-                <div className="flex items-center gap-2">
-                  {getDeviceIcon(cloudAuthUser?.deviceName)}
-                  <span>{cloudAuthUser?.deviceName || 'Local Duty Terminal'}</span>
-                  <span className="text-[10px] bg-slate-800 px-1.5 py-0.2 rounded font-mono text-slate-300">
-                    {cloudAuthUser?.role || 'Editor'}
-                  </span>
-                </div>
-                <span className="font-mono text-slate-500">{cloudAuthUser?.username || 'OFFICER'}</span>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'pending' && (
-            <div className="space-y-3">
-              {pendingRecords.length === 0 ? (
-                <div className="py-8 text-center text-slate-500 space-y-1.5">
-                  <CheckCircle2 size={24} className="mx-auto text-emerald-500/60" />
-                  <div className="text-xs font-semibold text-slate-400">No pending uploads</div>
-                  <div className="text-[11px]">All records are in sync with cloud storage.</div>
-                </div>
-              ) : (
-                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
-                  {pendingRecords.map((r, i) => (
-                    <div key={r.id || i} className="p-2 bg-slate-800/40 border border-slate-800 rounded-lg flex items-center justify-between text-[11px]">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-slate-400">#{r.id}</span>
-                        <span className="font-semibold text-slate-200">{r.fullname || r.passport || 'Record'}</span>
-                      </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950/60 text-amber-400 border border-amber-800/60">
-                        {r.syncStatus || 'pending_sync'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'deletions' && (
-            <div className="space-y-3">
-              <div className="p-3 bg-slate-800/30 border border-slate-800 rounded-xl flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-white block">Pending Deletion Queue</span>
-                  <span className="text-[11px] text-slate-400">
-                    {totalDeletedPending > 0 
-                      ? `${totalDeletedPending} ID(s) queued for remote purge`
-                      : 'No deleted records waiting to purge'}
-                  </span>
-                </div>
-                {totalDeletedPending > 0 && (
-                  <button
-                    onClick={handlePurgeAllDeletions}
-                    disabled={isPurgingDeletions || !isOnline}
-                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Trash2 size={13} />
-                    <span>{isPurgingDeletions ? 'Purging...' : 'Purge from Cloud'}</span>
-                  </button>
-                )}
-              </div>
-
-              {totalDeletedPending === 0 ? (
-                <div className="py-8 text-center text-slate-500 space-y-1.5">
-                  <CheckCircle2 size={24} className="mx-auto text-emerald-500/60" />
-                  <div className="text-xs font-semibold text-slate-400">Deletion Queue is Clear</div>
-                  <div className="text-[11px]">All local deletions have been purged from Firestore.</div>
-                </div>
-              ) : (
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                  {(Object.entries(deletedQueues) as [string, string[]][]).map(([col, ids]) => (
-                    Array.isArray(ids) && ids.length > 0 && (
-                      <div key={col} className="bg-slate-800/40 border border-slate-800 rounded-lg p-2.5 space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px] font-bold text-slate-300">
-                          <span className="uppercase">{col}</span>
-                          <span className="text-rose-400">{ids.length} deleted</span>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className={`p-1 rounded-md border ${m.accent}`}>
+                          <Icon size={12} />
                         </div>
-                        <div className="flex flex-wrap gap-1">
-                          {ids.map(id => (
-                            <span key={id} className="text-[10px] font-mono px-2 py-0.5 bg-slate-900 text-rose-300 border border-slate-700 rounded">
-                              ID: {id}
-                            </span>
-                          ))}
-                        </div>
+                        <span className="text-[11px] font-bold text-slate-200 truncate">
+                          {m.title}
+                        </span>
                       </div>
-                    )
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                    </div>
 
-          {activeTab === 'devices' && (
-            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    <div className="flex items-baseline justify-between font-mono my-1 px-0.5">
+                      <div className="text-left">
+                        <span className="text-[9px] text-slate-400 block uppercase leading-none mb-0.5">Local</span>
+                        <span className="text-sm font-black text-white">{m.local}</span>
+                      </div>
+                      <div className="text-slate-500 text-xs">/</div>
+                      <div className="text-right">
+                        <span className="text-[9px] text-cyan-400 block uppercase leading-none mb-0.5">Cloud</span>
+                        <span className="text-sm font-black text-cyan-300">{m.cloud}</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-1 pt-1 border-t border-slate-700/40 flex items-center justify-between">
+                      {m.pending > 0 ? (
+                        <span className="text-[9px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                          <Clock size={8} /> {m.pending} Pending
+                        </span>
+                      ) : m.synced ? (
+                        <span className="text-[9px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                          <CheckCircle2 size={8} /> Synced
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                          <Check size={8} /> Ready
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* Connected Devices View */
+            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
               {deviceSessions.length === 0 ? (
-                <div className="py-8 text-center text-slate-500">
-                  <div className="text-xs">No connected device records found</div>
-                </div>
+                <div className="p-4 text-center text-slate-400 text-xs">No secondary devices connected</div>
               ) : (
-                deviceSessions.map(session => (
-                  <div key={session.deviceId} className="p-2.5 bg-slate-800/40 border border-slate-800 rounded-xl flex items-center justify-between text-[11px]">
-                    <div className="flex items-center gap-2.5">
-                      {getDeviceIcon(session.deviceName)}
+                deviceSessions.map((dev: any, i: number) => (
+                  <div key={i} className="bg-slate-800/60 border border-slate-700/60 p-2 rounded-xl flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-slate-700/60 text-slate-300">
+                        {getDeviceIcon(dev.deviceName)}
+                      </div>
                       <div>
-                        <div className="font-semibold text-slate-200">{session.deviceName || 'Terminal'}</div>
-                        <div className="text-[10px] text-slate-500">{session.username || 'User'} • {session.lastActive || 'Active'}</div>
+                        <div className="font-bold text-white text-xs">{dev.deviceName || 'Device'}</div>
+                        <span className="text-[9px] text-slate-400 font-mono">User: {dev.username || 'OFFICER'}</span>
                       </div>
                     </div>
-                    <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-300 font-mono">
-                      {session.accountRole || 'Editor'}
-                    </span>
+                    <span className="text-[9px] text-emerald-400 font-bold font-mono">● Connected</span>
                   </div>
                 ))
               )}
             </div>
           )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-3 py-2 bg-slate-900 border-t border-slate-800 text-center text-[9px] text-slate-500 uppercase tracking-wider font-mono">
+          2-Way Auto-Sync Active • Myeik Immigration
         </div>
       </motion.div>
     </div>

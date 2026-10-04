@@ -19,7 +19,6 @@ interface ActivityLogViewProps {
   watchList?: any[];
   masterData?: any[];
   vehicleSummaries?: any[];
-  checkingHistory?: any[];
 }
 
 export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
@@ -28,8 +27,7 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
   records = [],
   watchList = [],
   masterData = [],
-  vehicleSummaries = [],
-  checkingHistory = []
+  vehicleSummaries = []
 }) => {
   const isSuperadmin = cloudAuthUser?.role === 'Superadmin';
   const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
@@ -49,7 +47,6 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
     const totalWatchList = watchList.length;
     const totalMaster = masterData.length;
     const totalVehicles = vehicleSummaries.length;
-    const totalChecks = checkingHistory.length;
 
     return {
       totalRecords,
@@ -57,10 +54,9 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
       outCount,
       totalWatchList,
       totalMaster,
-      totalVehicles,
-      totalChecks
+      totalVehicles
     };
-  }, [records, watchList, masterData, vehicleSummaries, checkingHistory]);
+  }, [records, watchList, masterData, vehicleSummaries]);
 
   const fetchLogs = async (forceCloud = true) => {
     setIsLoading(true);

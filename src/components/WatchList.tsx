@@ -37,13 +37,12 @@ import { ImmRecord, MasterItem, MovementData, Tab, WatchListPerson, WatchListRec
 import { logActivity } from '../utils/activityLogger';
 import * as XLSX from 'xlsx';
 import { miniDB } from '../db';
-import { saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, setSyncedHash, deleteRecordFromFirestore } from '../lib/firebase';
+import { saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, setSyncedHash } from '../lib/firebase';
 
 interface WatchListProps {
   records: ImmRecord[];
   tempRecords?: ImmRecord[];
   movementMap?: Record<string, MovementData>;
-  checkingHistory?: any[];
   masterData?: MasterItem[];
   currentUser?: { title?: string; name?: string } | null;
   showToast: (msg: string) => void;
@@ -161,7 +160,6 @@ export const WatchList: React.FC<WatchListProps> = ({
   records = [],
   tempRecords = [],
   movementMap = {},
-  checkingHistory = [],
   masterData = [],
   currentUser,
   showToast,
@@ -188,6 +186,32 @@ export const WatchList: React.FC<WatchListProps> = ({
 
   const watchList = parentWatchList !== undefined ? parentWatchList : localWatchList;
   const setWatchList = parentSetWatchList || setLocalWatchList;
+
+  // Real-time Cloud synchronization listener for cross-device updates
+  useEffect(() => {
+    const unsub = subscribeToFirestoreCollection('watchList', (items) => {
+      if (Array.isArray(items)) {
+        setWatchList((currentList: WatchListRecord[]) => {
+          const map = new Map<string, WatchListRecord>();
+          (currentList || []).forEach(item => { if (item && item.id) map.set(item.id, item); });
+          items.forEach((item: WatchListRecord) => { if (item && item.id) map.set(item.id, item); });
+          const merged = Array.from(map.values()).sort((a, b) => {
+            const timeA = new Date(a.createdAt || a.letterDate || 0).getTime();
+            const timeB = new Date(b.createdAt || b.letterDate || 0).getTime();
+            return timeB - timeA;
+          });
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+            miniDB.set('watchList', merged).catch(() => {});
+          } catch (e) {}
+          return merged;
+        });
+      }
+    });
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [setWatchList]);
 
   // Secondary hydration from IndexedDB if local is empty
   useEffect(() => {
@@ -429,7 +453,6 @@ export const WatchList: React.FC<WatchListProps> = ({
     const targetWl = watchList.find(r => r.id === id);
     if (confirm('ဤစောင့်ကြည့်စာရင်း မှတ်တမ်းကို ဖျက်မည်မှာ သေချာပါသလား?')) {
       setWatchList(prev => prev.filter(r => r.id !== id));
-      deleteRecordFromFirestore('watchList', id);
       if (activeCheckRecord?.id === id) setActiveCheckRecord(null);
       if (activeReportRecord?.id === id) setActiveReportRecord(null);
       if (targetWl) {
@@ -608,44 +631,10 @@ export const WatchList: React.FC<WatchListProps> = ({
       // MovementMap check
       const movData = pp ? movementMap[pp] || null : null;
 
-      // Checking History entries check
+      // Checking History entries check (removed with CHK)
       const chkEntries: any[] = [];
-      (checkingHistory || []).forEach(c => {
-        const cPP = (c.passport || '').trim().toUpperCase();
-        const cName = (c.fullname || c.name || '').trim();
-        const cFather = (c.fatherName || '').trim();
-        const cMother = (c.motherName || '').trim();
-        const cHost = (c.hostName || '').trim();
-        const cNRC = (c.nrc || c.idNumber || '').trim();
-        const cAddr = (c.confirmedAddress || c.originalAddress || '').trim();
 
-        const chkReasons: string[] = [];
-
-        if (pp && cPP === pp) chkReasons.push(`တိုက်ရိုက် ပတ်စ်ပို့အမှတ် (${person.passport})`);
-        if (pName && isNameMatching(pName, cName)) chkReasons.push(`တိုက်ရိုက် အမည် (${person.name})`);
-        if (pFather && (isNameMatching(pFather, cFather) || isNameMatching(pFather, cName) || isNameMatching(pFather, cHost))) {
-          chkReasons.push(`အဖအမည် (${person.fatherName}) ဖြင့် တည်းခိုစစ်ဆေးချက် တွေ့ရှိ`);
-        }
-        if (pMother && (isNameMatching(pMother, cMother) || isNameMatching(pMother, cName))) {
-          chkReasons.push(`အမိအမည် (${person.motherName}) ဖြင့် တည်းခိုစစ်ဆေးချက် တွေ့ရှိ`);
-        }
-        if (pID && (cleanVal(cNRC).includes(cleanVal(pID)) || cleanVal(cPP).includes(cleanVal(pID)))) {
-          chkReasons.push(`ID/မှတ်ပုံတင် (${person.idNumber}) ဖြင့် တည်းခိုစစ်ဆေးချက် တွေ့ရှိ`);
-        }
-        if (pAddr && pAddr.length >= 5 && cleanVal(cAddr).includes(cleanVal(pAddr))) {
-          chkReasons.push(`တည်းခိုလိပ်စာ (${person.address}) တိုက်ဆိုင်မှု`);
-        }
-
-        if (chkReasons.length > 0) {
-          hasRelatedMatch = true;
-          chkEntries.push({
-            ...c,
-            matchReason: chkReasons.join(', ')
-          });
-        }
-      });
-
-      if (matched.length > 0 || movData || chkEntries.length > 0) {
+      if (matched.length > 0 || movData) {
         hasAnyMatch = true;
       }
 

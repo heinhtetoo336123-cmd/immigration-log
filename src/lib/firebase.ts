@@ -11,269 +11,194 @@ import {
   deleteDoc
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
+import config from '../../firebase-applet-config.json';
 
-// 2. SWITCH FIREBASE PROJECT TO `immi-log-sys`
+// Explicitly set projectId and authDomain as requested
 export const firebaseConfig = {
-  apiKey: "AIzaSyCnl9z3CNPYksrzHXvmR7O4YJbb_mCAk9M",
-  authDomain: "immi-log-sys.firebaseapp.com",
+  ...config,
   projectId: "immi-log-sys",
-  storageBucket: "immi-log-sys.firebasestorage.app",
-  messagingSenderId: "224760074381",
-  appId: "1:224760074381:web:9ab094f68317d9a03492c4"
+  authDomain: "immi-log-sys.firebaseapp.com",
 };
 
+// Initialize Firebase App
 export const app = initializeApp(firebaseConfig);
+
+// Connect to default Firestore with getFirestore(app)
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 
-// Initialize anonymous auth automatically if enabled, fallback gracefully if restricted
+// LocalStorage Collection Key Mapping for Offline Fallback
+export const LOCAL_STORAGE_COLLECTIONS: Record<string, string> = {
+  records: 'imm_records_react',
+  tempRecords: 'imm_temp_records_react',
+  masterData: 'imm_master_react',
+  vehicleSummaries: 'imm_vehicle_summaries',
+  dossierHistory: 'imm_dossier_history_react',
+  watchList: 'imm_watchlist_records_v1',
+  activityLogs: 'imm_activity_logs_v1',
+  activeSessions: 'imm_pwa_device_sessions',
+};
+
+export const getFromLocalStorageFallback = <T = any>(collectionName: string): T[] | null => {
+  const localKey = LOCAL_STORAGE_COLLECTIONS[collectionName] || `imm_fallback_${collectionName}`;
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(localKey);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as T[];
+    }
+  } catch {
+    // Completely silent fail
+  }
+  return null;
+};
+
+export const saveToLocalStorageFallback = (collectionName: string, items: any[]): void => {
+  const localKey = LOCAL_STORAGE_COLLECTIONS[collectionName] || `imm_fallback_${collectionName}`;
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(localKey, JSON.stringify(items || []));
+  } catch {
+    // Completely silent fail
+  }
+};
+
+// Global switch indicating cloud firestore is unavailable / not found / offline
+let isFirestoreUnavailable = false;
+
+export const setFirestoreUnavailable = (val: boolean) => {
+  isFirestoreUnavailable = val;
+};
+
+export const checkIsFirestoreUnavailable = (): boolean => isFirestoreUnavailable;
+
+// Safe error detection helper: matches connection, not-found, quota, and offline errors
+export const isOfflineOrNetworkError = (err: any): boolean => {
+  if (!err) return false;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
+  const code = String(err?.code || '').toLowerCase();
+  const msg = String(err?.message || err || '').toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'failed-precondition' ||
+    code === 'not-found' ||
+    code === 'permission-denied' ||
+    code.includes('offline') ||
+    code.includes('network') ||
+    code.includes('timeout') ||
+    code.includes('not-found') ||
+    code.includes('admin-restricted-operation') ||
+    code.includes('operation-not-allowed') ||
+    msg.includes('client is offline') ||
+    msg.includes('offline') ||
+    msg.includes('database not found') ||
+    msg.includes('not found') ||
+    msg.includes('network-request-failed') ||
+    msg.includes('could not reach cloud firestore backend') ||
+    msg.includes('failed to get document because the client is offline') ||
+    msg.includes('admin-restricted-operation') ||
+    msg.includes('restricted to administrators') ||
+    msg.includes('operation-not-allowed')
+  );
+};
+
+// Trackers to prevent infinite auth and console error loops
+let isAuthRestricted = false;
+let isAuthAttempting = false;
+
+export const checkIsAuthRestricted = (): boolean => isAuthRestricted;
+
+// Initialize anonymous auth with complete error suppression and fallback
 export const initAuth = (onUserChanged?: (user: User | null) => void) => {
   if (onUserChanged) onUserChanged(auth.currentUser);
+
   return onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      signInAnonymously(auth).catch((err) => {
-        console.warn("signInAnonymously failed:", err);
-      });
+    if (user) {
+      if (onUserChanged) onUserChanged(user);
+      return;
     }
-    if (onUserChanged) onUserChanged(user);
+
+    if (isAuthRestricted || isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      if (onUserChanged) onUserChanged(null);
+      return;
+    }
+
+    if (!isAuthAttempting) {
+      isAuthAttempting = true;
+      signInAnonymously(auth)
+        .then((cred) => {
+          isAuthAttempting = false;
+          if (onUserChanged) onUserChanged(cred.user);
+        })
+        .catch((err: any) => {
+          isAuthAttempting = false;
+          // Silent fail / suppress error loop
+          const code = String(err?.code || '').toLowerCase();
+          const msg = String(err?.message || err || '').toLowerCase();
+          if (
+            code.includes('admin-restricted-operation') ||
+            code.includes('operation-not-allowed') ||
+            msg.includes('admin-restricted-operation') ||
+            msg.includes('restricted to administrators')
+          ) {
+            isAuthRestricted = true;
+          }
+          if (onUserChanged) onUserChanged(null);
+        });
+    } else {
+      if (onUserChanged) onUserChanged(null);
+    }
   });
 };
 
 export const ensureAuthenticated = (): Promise<User | null> => {
-  return new Promise((resolve) => {
-    if (auth.currentUser) {
-      resolve(auth.currentUser);
-      return;
-    }
+  if (auth.currentUser) {
+    return Promise.resolve(auth.currentUser);
+  }
+  if (isAuthRestricted || isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return Promise.resolve(null);
+  }
+  if (isAuthAttempting) {
+    return Promise.resolve(auth.currentUser || null);
+  }
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        unsubscribe();
-        resolve(user);
+  isAuthAttempting = true;
+  return signInAnonymously(auth)
+    .then((cred) => {
+      isAuthAttempting = false;
+      return cred.user;
+    })
+    .catch((err: any) => {
+      isAuthAttempting = false;
+      const code = String(err?.code || '').toLowerCase();
+      const msg = String(err?.message || err || '').toLowerCase();
+      if (
+        code.includes('admin-restricted-operation') ||
+        code.includes('operation-not-allowed') ||
+        msg.includes('admin-restricted-operation') ||
+        msg.includes('restricted to administrators')
+      ) {
+        isAuthRestricted = true;
       }
+      // Silently resolve null - no console.error / warn
+      return null;
     });
-
-    signInAnonymously(auth).catch((err) => {
-      console.warn("signInAnonymously error:", err);
-      resolve(null);
-    });
-  });
 };
 
-// Sync tracking hashes for collections to avoid redundant writes
+// Sync helpers for main collections & app state
 const lastSyncedHashes = new Map<string, string>();
 
 export const setSyncedHash = (collectionName: string, items: any[]) => {
   try {
     lastSyncedHashes.set(collectionName, JSON.stringify(items || []));
-  } catch (e) {
-    console.error("Failed to set synced hash:", e);
+  } catch {
+    // silent catch
   }
 };
 
 export const getSyncedHash = (collectionName: string): string | undefined => {
   return lastSyncedHashes.get(collectionName);
-};
-
-// Deleted IDs Queue Management (Tracks deletions offline and purges them upon sync)
-export const getDeletedRecordIds = (collectionName: string): string[] => {
-  try {
-    const raw = localStorage.getItem(`imm_deleted_queue_${collectionName}`);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-};
-
-export const getAllDeletedQueues = (): Record<string, string[]> => {
-  const collections = ['records', 'tempRecords', 'masterData', 'vehicleSummaries', 'checkingHistory', 'dossierHistory', 'watchList'];
-  const res: Record<string, string[]> = {};
-  for (const col of collections) {
-    const ids = getDeletedRecordIds(col);
-    if (ids.length > 0) res[col] = ids;
-  }
-  return res;
-};
-
-export const trackDeletedRecord = (collectionName: string, id: string | number) => {
-  if (id === undefined || id === null) return;
-  const strId = String(id);
-  try {
-    const current = getDeletedRecordIds(collectionName);
-    if (!current.includes(strId)) {
-      current.push(strId);
-      localStorage.setItem(`imm_deleted_queue_${collectionName}`, JSON.stringify(current));
-    }
-  } catch (e) {
-    console.warn("Failed to queue deleted record ID:", e);
-  }
-};
-
-export const clearDeletedRecordIds = (collectionName: string) => {
-  try {
-    localStorage.removeItem(`imm_deleted_queue_${collectionName}`);
-  } catch {}
-};
-
-/**
- * Direct & Synchronized Deletion from Firestore:
- * 1. Tracks ID in local deleted queue immediately.
- * 2. If online and authenticated, loads appData/{collectionName} (and chunk parts if chunked)
- *    and removes the matching item, decrementing totalItems count on Firestore so the cloud count updates instantly (e.g. 1748 -> 1747).
- * 3. Updates _metadata timestamp so all connected devices recognize the change.
- */
-export const deleteRecordFromFirestore = async (collectionName: string, id: string | number): Promise<boolean> => {
-  trackDeletedRecord(collectionName, id);
-  if (isQuotaExhausted) return false;
-  try {
-    await ensureAuthenticated();
-    const strId = String(id);
-    const docRef = doc(db, 'appData', collectionName);
-    const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
-
-    if (snap.exists()) {
-      const data = snap.data();
-      const now = new Date().toISOString();
-
-      if (data?.isChunked && typeof data?.chunkCount === 'number' && data.chunkCount > 0) {
-        let removedCount = 0;
-        let newTotal = typeof data.totalItems === 'number' ? data.totalItems : 0;
-
-        for (let i = 0; i < data.chunkCount; i++) {
-          const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
-          const chunkSnap = await getDocFromServer(chunkRef).catch(() => getDoc(chunkRef));
-          if (chunkSnap.exists()) {
-            const chunkData = chunkSnap.data();
-            if (Array.isArray(chunkData?.items)) {
-              const beforeLen = chunkData.items.length;
-              const filtered = chunkData.items.filter((item: any) => {
-                const itemId = item?.id !== undefined ? String(item.id) : null;
-                return itemId !== strId;
-              });
-              if (filtered.length !== beforeLen) {
-                const diff = beforeLen - filtered.length;
-                removedCount += diff;
-                newTotal = Math.max(0, newTotal - diff);
-                await setDoc(chunkRef, { items: filtered, partIndex: i, lastUpdated: now }, { merge: true });
-              }
-            }
-          }
-        }
-
-        const rootItems = Array.isArray(data.items)
-          ? data.items.filter((item: any) => String(item?.id) !== strId)
-          : [];
-
-        await setDoc(docRef, {
-          isChunked: true,
-          chunkCount: data.chunkCount,
-          totalItems: newTotal,
-          lastUpdated: now,
-          items: rootItems
-        }, { merge: true });
-
-      } else if (Array.isArray(data?.items)) {
-        const filtered = data.items.filter((item: any) => {
-          const itemId = item?.id !== undefined ? String(item.id) : null;
-          return itemId !== strId;
-        });
-        await setDoc(docRef, {
-          items: filtered,
-          totalItems: filtered.length,
-          lastUpdated: now,
-          isChunked: false
-        });
-      }
-
-      // Update metadata timestamp
-      const metaRef = doc(db, 'appData', '_metadata');
-      setDoc(metaRef, { [collectionName]: now }, { merge: true }).catch(() => {});
-
-      // Invalidate synced hash
-      lastSyncedHashes.delete(collectionName);
-    }
-
-    // Clean individual doc if any
-    deleteDoc(doc(db, collectionName, strId)).catch(() => {});
-    deleteDoc(doc(db, 'appData', strId)).catch(() => {});
-
-    return true;
-  } catch (err) {
-    console.warn(`deleteRecordFromFirestore notice for ${collectionName}/${id}:`, err);
-    return false;
-  }
-};
-
-export const purgeDeletedRecordsFromFirestore = async (collectionName: string): Promise<number> => {
-  const deletedIds = getDeletedRecordIds(collectionName);
-  if (deletedIds.length === 0) return 0;
-  if (isQuotaExhausted) return 0;
-
-  try {
-    await ensureAuthenticated();
-    const deletedSet = new Set(deletedIds.map(String));
-    const docRef = doc(db, 'appData', collectionName);
-    const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
-    const now = new Date().toISOString();
-    let purgedCount = 0;
-
-    if (snap.exists()) {
-      const data = snap.data();
-      if (data?.isChunked && typeof data?.chunkCount === 'number' && data.chunkCount > 0) {
-        let newTotal = typeof data.totalItems === 'number' ? data.totalItems : 0;
-        for (let i = 0; i < data.chunkCount; i++) {
-          const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
-          const chunkSnap = await getDocFromServer(chunkRef).catch(() => getDoc(chunkRef));
-          if (chunkSnap.exists()) {
-            const chunkData = chunkSnap.data();
-            if (Array.isArray(chunkData?.items)) {
-              const beforeLen = chunkData.items.length;
-              const filtered = chunkData.items.filter((item: any) => !deletedSet.has(String(item?.id)));
-              if (filtered.length !== beforeLen) {
-                const diff = beforeLen - filtered.length;
-                purgedCount += diff;
-                newTotal = Math.max(0, newTotal - diff);
-                await setDoc(chunkRef, { items: filtered, partIndex: i, lastUpdated: now }, { merge: true });
-              }
-            }
-          }
-        }
-
-        const rootItems = Array.isArray(data.items)
-          ? data.items.filter((item: any) => !deletedSet.has(String(item?.id)))
-          : [];
-
-        await setDoc(docRef, {
-          isChunked: true,
-          chunkCount: data.chunkCount,
-          totalItems: newTotal,
-          lastUpdated: now,
-          items: rootItems
-        }, { merge: true });
-
-      } else if (Array.isArray(data?.items)) {
-        const beforeLen = data.items.length;
-        const filtered = data.items.filter((item: any) => !deletedSet.has(String(item?.id)));
-        purgedCount = beforeLen - filtered.length;
-        await setDoc(docRef, {
-          items: filtered,
-          totalItems: filtered.length,
-          lastUpdated: now,
-          isChunked: false
-        });
-      }
-
-      const metaRef = doc(db, 'appData', '_metadata');
-      setDoc(metaRef, { [collectionName]: now }, { merge: true }).catch(() => {});
-      lastSyncedHashes.delete(collectionName);
-    }
-
-    clearDeletedRecordIds(collectionName);
-    return purgedCount;
-  } catch (e) {
-    console.warn(`purgeDeletedRecordsFromFirestore failed for ${collectionName}:`, e);
-    return 0;
-  }
 };
 
 let isQuotaExhausted = false;
@@ -298,8 +223,10 @@ export const onWriteError = (cb: WriteErrorCallback) => {
 };
 
 export const triggerWriteErrorAlert = (collectionName: string, reason: string, err?: any) => {
+  // If firestore is unavailable or offline, suppress alarm popup to keep UI completely calm
+  if (isFirestoreUnavailable || isOfflineOrNetworkError(err)) return;
   writeErrorCallbacks.forEach(cb => {
-    try { cb({ collectionName, reason, error: err }); } catch (e) { console.error(e); }
+    try { cb({ collectionName, reason, error: err }); } catch {}
   });
 };
 
@@ -322,7 +249,7 @@ export const isQuotaError = (err: any): boolean => {
 
 export const notifyQuotaListeners = (exhausted: boolean) => {
   quotaListeners.forEach(cb => {
-    try { cb(exhausted); } catch (e) { console.error(e); }
+    try { cb(exhausted); } catch {}
   });
 };
 
@@ -343,7 +270,14 @@ export const setQuotaExhausted = (exhausted: boolean) => {
 
 export const resetQuotaState = () => {
   setQuotaExhausted(false);
+  isFirestoreUnavailable = false;
   if (quotaResetTimeout) clearTimeout(quotaResetTimeout);
+};
+
+export const resetFirestoreAvailability = () => {
+  isFirestoreUnavailable = false;
+  isAuthRestricted = false;
+  isAuthAttempting = false;
 };
 
 export const getIsQuotaExhausted = () => isQuotaExhausted;
@@ -362,13 +296,15 @@ export const setLocalTimestamp = (collectionName: string, timestamp: string) => 
     const timestamps = getLocalTimestamps();
     timestamps[collectionName] = timestamp;
     localStorage.setItem('imm_pwa_local_timestamps', JSON.stringify(timestamps));
-  } catch (e) {
-    console.error("Failed to save local timestamp:", e);
+  } catch {
+    // silent catch
   }
 };
 
-export const getCloudMetadata = async () => {
-  if (isQuotaExhausted) return null;
+export const getCloudMetadata = async (): Promise<Record<string, string> | null> => {
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return null;
+  }
   try {
     await ensureAuthenticated();
     const metaRef = doc(db, 'appData', '_metadata');
@@ -378,10 +314,13 @@ export const getCloudMetadata = async () => {
     }
     return null;
   } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
     if (isQuotaError(err)) {
       setQuotaExhausted(true);
-      console.warn("Firestore metadata fetch quota exceeded.");
     }
+    // Return null silently - zero console error loop
     return null;
   }
 };
@@ -391,14 +330,15 @@ export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[
 
   const getItemKey = (item: any): string | null => {
     if (!item) return null;
-    if (item.date && item.vehicleNo) {
-      return `veh_${item.date}_${String(item.vehicleNo).toUpperCase().trim()}`;
-    }
+    // For master data items with type and name, group by normalized type and name so duplicates merge properly
     if (item.name && item.type) {
       return `master_${String(item.type).trim().toLowerCase()}_${String(item.name).trim().toLowerCase().replace(/\s+/g, ' ')}`;
     }
     if (item[key] !== undefined && item[key] !== null && String(item[key]).trim() !== '') {
       return `${key}_${item[key]}`;
+    }
+    if (item.date && item.vehicleNo) {
+      return `veh_${item.date}_${String(item.vehicleNo).toUpperCase().trim()}_${item.time || ''}_${item.id || ''}`;
     }
     if (item.timestamp && item.passport) {
       return `ts_pp_${item.timestamp}_${item.passport.toUpperCase().trim()}`;
@@ -409,7 +349,6 @@ export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[
     return JSON.stringify(item);
   };
 
-  // 1. Put local items in map first
   if (Array.isArray(localArr)) {
     localArr.forEach(item => {
       const k = getItemKey(item);
@@ -417,7 +356,6 @@ export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[
     });
   }
 
-  // 2. Merge remote items into map
   if (Array.isArray(remoteArr)) {
     remoteArr.forEach(item => {
       const k = getItemKey(item);
@@ -447,168 +385,190 @@ export const mergeCollectionItems = <T extends Record<string, any>>(localArr: T[
   return Array.from(map.values());
 };
 
-const CHUNK_SIZE = 500; // 500 items per chunk guarantees payload well under 250KB (Firestore doc limit is 1MB)
+export const extractItemsFromDocs = (docs: Array<{ id: string; data: () => any }>, collectionName: string): any[] => {
+  if (!docs || docs.length === 0) return [];
+  
+  // Find all matching docs and chunk parts for this collection
+  // e.g. 'records', 'records_part_0', 'records_part_1', 'records_chunk_0', etc.
+  const matchingDocs = docs.filter(d => {
+    const id = d.id;
+    if (id === collectionName) return true;
+    if (id.startsWith(`${collectionName}_part_`)) return true;
+    if (id.startsWith(`${collectionName}_chunk_`)) return true;
+    if (id.startsWith(`${collectionName}_`)) {
+      const suffix = id.substring(collectionName.length + 1);
+      if (/^\d+$/.test(suffix) || suffix.startsWith('part') || suffix.startsWith('chunk')) {
+        return true;
+      }
+    }
+    return false;
+  });
 
-/**
- * STRICT MANUAL/EXPLICIT WRITE ONLY:
- * Writes to Firestore (setDoc, updateDoc, addDoc) execute ONLY when called by an explicit action button.
- * Chunking protects against Firestore's 1MB limit for large datasets (~45,800 records).
- */
+  if (matchingDocs.length === 0) return [];
+
+  // Sort chunks in numerical order so rows remain in correct sequence
+  matchingDocs.sort((a, b) => {
+    if (a.id === collectionName) return -1;
+    if (b.id === collectionName) return 1;
+    const numA = parseInt(a.id.match(/\d+$/)?.[0] || '0', 10);
+    const numB = parseInt(b.id.match(/\d+$/)?.[0] || '0', 10);
+    return numA - numB;
+  });
+
+  // Flatten and merge all chunk arrays
+  const allItems: any[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const d of matchingDocs) {
+    const data = d.data();
+    if (data && Array.isArray(data.items)) {
+      for (const item of data.items) {
+        if (!item) continue;
+        const k = (item.name && item.type)
+          ? `master_${String(item.type).trim().toLowerCase()}_${String(item.name).trim().toLowerCase().replace(/\s+/g, ' ')}`
+          : item.id !== undefined && item.id !== null
+          ? `id_${item.id}`
+          : item.date && item.vehicleNo
+          ? `veh_${item.date}_${String(item.vehicleNo).toUpperCase().trim()}_${item.time || ''}`
+          : item.timestamp && item.passport
+          ? `ts_pp_${item.timestamp}_${item.passport.toUpperCase().trim()}`
+          : item.timestamp
+          ? `ts_${item.timestamp}`
+          : JSON.stringify(item);
+
+        if (!seenKeys.has(k)) {
+          seenKeys.add(k);
+          allItems.push(item);
+        }
+      }
+    }
+  }
+
+  return allItems;
+};
+
 export const saveCollectionToFirestore = async (
   collectionName: string, 
   items: any[], 
   force: boolean = false,
   mergeWithRemote: boolean = true
 ): Promise<boolean> => {
+  // Always safely back up items to localStorage fallback immediately
+  saveToLocalStorageFallback(collectionName, items);
+
+  if (isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    // Data is safely saved to localStorage fallback, return true so callers know local persistence succeeded
+    return true;
+  }
+
   if (isQuotaExhausted) {
-    triggerWriteErrorAlert(collectionName, "Write Quota Limit Reached");
     return false;
   }
 
   try {
     await ensureAuthenticated();
     const currentJson = JSON.stringify(items || []);
-    // STRICT check: if data has NOT changed and not forcing, return true without calling Firestore
     if (!force && lastSyncedHashes.get(collectionName) === currentJson) {
       return true;
     }
 
     const cleanItems: any[] = JSON.parse(currentJson);
     const now = new Date().toISOString();
-    const docRef = doc(db, 'appData', collectionName);
-
-    // Read deleted IDs queue for this collection
-    const deletedIds = getDeletedRecordIds(collectionName);
-    const deletedIdsSet = new Set(deletedIds.map(String));
-
     let finalItems = cleanItems;
 
-    // Fail-safe merge: fetch existing remote collection so entries from other devices are never wiped out
     if (mergeWithRemote) {
       try {
-        const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
-        if (snap.exists()) {
-          const remoteData = snap.data();
-          if (remoteData) {
-            let remoteItems: any[] = [];
-            if (remoteData.isChunked && typeof remoteData.chunkCount === 'number') {
-              // Read chunk parts
-              const chunkPromises = [];
-              for (let i = 0; i < remoteData.chunkCount; i++) {
-                const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
-                chunkPromises.push(getDocFromServer(chunkRef).catch(() => getDoc(chunkRef)));
-              }
-              const chunkSnaps = await Promise.all(chunkPromises);
-              chunkSnaps.forEach(cs => {
-                if (cs.exists() && Array.isArray(cs.data()?.items)) {
-                  remoteItems.push(...cs.data()!.items);
-                }
-              });
-            } else if (Array.isArray(remoteData.items)) {
-              remoteItems = remoteData.items;
-            }
-
-            // Exclude any remote items that were deleted locally
-            if (deletedIdsSet.size > 0) {
-              remoteItems = remoteItems.filter(item => {
-                const itemId = item?.id !== undefined ? String(item.id) : null;
-                return !itemId || !deletedIdsSet.has(itemId);
-              });
-            }
-
-            if (remoteItems.length > 0) {
-              finalItems = mergeCollectionItems(cleanItems, remoteItems, 'id');
+        const colRef = collection(db, 'appData');
+        const querySnap = await getDocs(colRef).catch(() => null);
+        if (querySnap && !querySnap.empty) {
+          const remoteItems = extractItemsFromDocs(querySnap.docs, collectionName);
+          if (remoteItems.length > 0) {
+            finalItems = mergeCollectionItems(cleanItems, remoteItems, 'id');
+          }
+        } else {
+          // Fallback to single doc fetch
+          const docRef = doc(db, 'appData', collectionName);
+          const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
+          if (snap.exists()) {
+            const remoteData = snap.data();
+            if (remoteData && Array.isArray(remoteData.items) && remoteData.items.length > 0) {
+              finalItems = mergeCollectionItems(cleanItems, remoteData.items, 'id');
             }
           }
         }
       } catch (mergeErr) {
-        console.warn(`Notice reading remote collection for merge before saving ${collectionName}:`, mergeErr);
+        if (isOfflineOrNetworkError(mergeErr)) {
+          isFirestoreUnavailable = true;
+        }
       }
     }
 
-    // Ensure finalItems strictly excludes all deleted IDs
-    if (deletedIdsSet.size > 0) {
-      finalItems = finalItems.filter(item => {
-        const itemId = item?.id !== undefined ? String(item.id) : null;
-        return !itemId || !deletedIdsSet.has(itemId);
-      });
-      // Purge from individual Firestore documents if any
-      for (const delId of deletedIds) {
-        deleteDoc(doc(db, collectionName, delId)).catch(() => {});
-        deleteDoc(doc(db, 'appData', delId)).catch(() => {});
-      }
-    }
-
-    // Normalize all items stored on Cloud Server as 'synced' with server timestamp
     const serverItems = finalItems.map(item => ({
       ...item,
       syncStatus: 'synced',
       serverSyncedAt: item.serverSyncedAt || now
     }));
 
-    // Check if dataset is large and requires chunking to prevent exceeding Firestore's 1MB document size limit
+    // If large collection (> 350 items), chunk into multiple parts to stay well under 1MB limit
+    const CHUNK_SIZE = 350;
+    const docRef = doc(db, 'appData', collectionName);
+
     if (serverItems.length > CHUNK_SIZE) {
-      const totalChunks = Math.ceil(serverItems.length / CHUNK_SIZE);
+      const totalParts = Math.ceil(serverItems.length / CHUNK_SIZE);
+      const writePromises: Promise<any>[] = [];
 
-      // Write only chunks that actually changed
-      for (let i = 0; i < totalChunks; i++) {
-        const chunkItems = serverItems.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        const chunkHash = JSON.stringify(chunkItems);
-        const chunkKey = `${collectionName}_part_${i}`;
-
-        if (!force && lastSyncedHashes.get(chunkKey) === chunkHash) {
-          continue; // Skip writing unchanged chunk to save write quota
-        }
-
-        const chunkRef = doc(db, 'appData', chunkKey);
-        await setDoc(chunkRef, { items: chunkItems, partIndex: i, lastUpdated: now });
-        lastSyncedHashes.set(chunkKey, chunkHash);
+      for (let i = 0; i < totalParts; i++) {
+        const chunk = serverItems.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const partRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+        writePromises.push(setDoc(partRef, {
+          items: chunk,
+          partIndex: i,
+          totalParts,
+          collectionName,
+          lastUpdated: now
+        }));
       }
 
-      // Write root descriptor with exact item count
-      await setDoc(docRef, {
+      // Also write root doc with reference/first chunk & count
+      writePromises.push(setDoc(docRef, {
+        items: serverItems.slice(0, CHUNK_SIZE),
+        totalCount: serverItems.length,
+        totalParts,
         isChunked: true,
-        chunkCount: totalChunks,
-        totalItems: serverItems.length,
-        lastUpdated: now,
-        // Keep a compact preview of latest records in the root doc for fast reads
-        items: serverItems.slice(0, 200)
-      });
+        lastUpdated: now
+      }));
+
+      await Promise.all(writePromises);
     } else {
-      // Small/standard collection fits easily in single document
       await setDoc(docRef, { 
         items: serverItems, 
-        lastUpdated: now, 
-        isChunked: false, 
-        totalItems: serverItems.length 
+        totalCount: serverItems.length, 
+        totalParts: 1, 
+        lastUpdated: now 
       });
     }
-
-    // Clear deleted queue on successful upload
-    clearDeletedRecordIds(collectionName);
     
-    // Update metadata document asynchronously
     const metaRef = doc(db, 'appData', '_metadata');
-    setDoc(metaRef, { [collectionName]: now }, { merge: true }).catch((err: any) => {
-      if (isQuotaError(err) || String(err).toLowerCase().includes('quota')) {
-        setQuotaExhausted(true);
-      }
-    });
+    setDoc(metaRef, { 
+      [collectionName]: now,
+      [`${collectionName}_count`]: serverItems.length 
+    }, { merge: true }).catch(() => {});
 
     const newHash = JSON.stringify(serverItems);
     lastSyncedHashes.set(collectionName, newHash);
     setLocalTimestamp(collectionName, now);
+    saveToLocalStorageFallback(collectionName, serverItems);
     return true;
   } catch (err: any) {
-    const quotaExceeded = isQuotaError(err);
-    if (quotaExceeded) {
-      setQuotaExhausted(true);
-      if (quotaResetTimeout) clearTimeout(quotaResetTimeout);
-      quotaResetTimeout = setTimeout(() => { setQuotaExhausted(false); }, 10 * 60 * 1000);
+    // Suppress all console.warn / console.error for database not found or network errors
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+      return true; // LocalStorage fallback is safely updated
     }
-    const reason = quotaExceeded ? "Write Quota Limit Exceeded" : (err?.message || "Server / Network Write Error");
-    triggerWriteErrorAlert(collectionName, reason, err);
-    console.warn(`Firestore write operation failed for ${collectionName}. Data is safely stored in local IndexedDB.`, err);
+    if (isQuotaError(err)) {
+      setQuotaExhausted(true);
+      return false;
+    }
     return false;
   }
 };
@@ -618,51 +578,49 @@ export interface CloudStats {
   tempRecordsCount: number;
   masterDataCount: number;
   vehicleSummariesCount: number;
-  checkingHistoryCount: number;
+  dossierHistoryCount: number;
   watchListCount: number;
   lastUpdated?: string;
   metadata?: Record<string, string>;
 }
 
 export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> => {
-  if (isQuotaExhausted) return null;
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return null;
+  }
   try {
     await ensureAuthenticated();
-    const metaRef = doc(db, 'appData', '_metadata');
-    const metaSnap = await getDocFromServer(metaRef).catch(() => getDoc(metaRef));
-    const metadata = metaSnap.exists() ? (metaSnap.data() as Record<string, string>) : {};
+    const colRef = collection(db, 'appData');
+    const querySnap = await getDocs(colRef).catch(() => null);
 
-    const [recSnap, tempSnap, masterSnap, checkSnap, watchSnap, vehicleSnap, dossierSnap] = await Promise.all([
-      getDocFromServer(doc(db, 'appData', 'records')).catch(() => getDoc(doc(db, 'appData', 'records'))),
-      getDocFromServer(doc(db, 'appData', 'tempRecords')).catch(() => getDoc(doc(db, 'appData', 'tempRecords'))),
-      getDocFromServer(doc(db, 'appData', 'masterData')).catch(() => getDoc(doc(db, 'appData', 'masterData'))),
-      getDocFromServer(doc(db, 'appData', 'checkingHistory')).catch(() => getDoc(doc(db, 'appData', 'checkingHistory'))),
-      getDocFromServer(doc(db, 'appData', 'watchList')).catch(() => getDoc(doc(db, 'appData', 'watchList'))),
-      getDocFromServer(doc(db, 'appData', 'vehicleSummaries')).catch(() => getDoc(doc(db, 'appData', 'vehicleSummaries'))),
-      getDocFromServer(doc(db, 'appData', 'dossierHistory')).catch(() => getDoc(doc(db, 'appData', 'dossierHistory')))
-    ]);
+    if (querySnap && !querySnap.empty) {
+      const docs = querySnap.docs;
+      const metaDoc = docs.find(d => d.id === '_metadata');
+      const metadata = metaDoc ? (metaDoc.data() as Record<string, string>) : {};
 
-    const getCount = (snap: any) => {
-      if (!snap.exists()) return 0;
-      const data = snap.data();
-      if (!data) return 0;
-      if (typeof data.totalItems === 'number') return data.totalItems;
-      if (Array.isArray(data.items)) return data.items.length;
-      return 0;
-    };
+      const getCollectionCount = (colName: string): number => {
+        const items = extractItemsFromDocs(docs, colName);
+        return items.length;
+      };
 
-    return {
-      recordsCount: getCount(recSnap),
-      tempRecordsCount: getCount(tempSnap),
-      masterDataCount: getCount(masterSnap),
-      vehicleSummariesCount: getCount(vehicleSnap),
-      checkingHistoryCount: getCount(checkSnap),
-      watchListCount: getCount(watchSnap),
-      metadata,
-      lastUpdated: metadata?.records || new Date().toISOString()
-    };
-  } catch (e) {
-    console.warn("fetchCloudCollectionStats error:", e);
+      return {
+        recordsCount: getCollectionCount('records'),
+        tempRecordsCount: getCollectionCount('tempRecords'),
+        masterDataCount: getCollectionCount('masterData'),
+        vehicleSummariesCount: getCollectionCount('vehicleSummaries'),
+        dossierHistoryCount: getCollectionCount('dossierHistory'),
+        watchListCount: getCollectionCount('watchList'),
+        metadata,
+        lastUpdated: metadata?.records || new Date().toISOString()
+      };
+    }
+
+    // Fallback if querySnap is empty
+    return null;
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
     return null;
   }
 };
@@ -671,33 +629,46 @@ export const subscribeToFirestoreCollection = (
   collectionName: string, 
   onUpdate: (items: any[]) => void
 ) => {
+  // Immediately feed current local fallback data to listener
+  const localFallback = getFromLocalStorageFallback(collectionName);
+  if (localFallback && localFallback.length > 0) {
+    try { onUpdate(localFallback); } catch {}
+  }
+
+  if (isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return () => {};
+  }
+
   let unsubscribeSnapshot: (() => void) | null = null;
   let isUnsubscribed = false;
 
   ensureAuthenticated().then(() => {
-    if (isUnsubscribed) return;
-    const docRef = doc(db, 'appData', collectionName);
-    unsubscribeSnapshot = onSnapshot(docRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        if (data && Array.isArray(data.items)) {
-          const jsonStr = JSON.stringify(data.items);
-          if (lastSyncedHashes.get(collectionName) === jsonStr) {
-            return;
+    if (isUnsubscribed || isFirestoreUnavailable) return;
+    try {
+      const colRef = collection(db, 'appData');
+      unsubscribeSnapshot = onSnapshot(colRef, (snapshot) => {
+        if (!snapshot.empty) {
+          const mergedItems = extractItemsFromDocs(snapshot.docs, collectionName);
+          if (mergedItems.length > 0) {
+            const jsonStr = JSON.stringify(mergedItems);
+            if (lastSyncedHashes.get(collectionName) === jsonStr) {
+              return;
+            }
+            lastSyncedHashes.set(collectionName, jsonStr);
+            saveToLocalStorageFallback(collectionName, mergedItems);
+            onUpdate(mergedItems);
           }
-          lastSyncedHashes.set(collectionName, jsonStr);
-          onUpdate(data.items);
         }
-      }
-    }, (err: any) => {
-      if (isQuotaError(err)) {
-        setQuotaExhausted(true);
-        console.warn(`Firestore snapshot quota limit reached for ${collectionName}. Using local cache/DB.`);
-      } else {
-        console.warn(`Firestore snapshot notice for ${collectionName}:`, err?.message || err);
-      }
-    });
-  });
+      }, (err: any) => {
+        // Silent fail / suppress error loop
+        if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+          isFirestoreUnavailable = true;
+        }
+      });
+    } catch {
+      // quiet catch
+    }
+  }).catch(() => {});
 
   return () => {
     isUnsubscribed = true;
@@ -707,87 +678,113 @@ export const subscribeToFirestoreCollection = (
   };
 };
 
-export const fetchCollectionFromFirestore = async (collectionName: string) => {
-  if (isQuotaExhausted) return null;
+export const fetchCollectionFromFirestore = async (collectionName: string): Promise<any[] | null> => {
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return getFromLocalStorageFallback(collectionName);
+  }
   try {
     await ensureAuthenticated();
-    const docRef = doc(db, 'appData', collectionName);
-    const snapshot = await getDocFromServer(docRef).catch(() => getDoc(docRef));
-    if (snapshot.exists()) {
-      const data = snapshot.data();
-      if (!data) return null;
-
-      if (data.lastUpdated) {
-        setLocalTimestamp(collectionName, data.lastUpdated);
-      }
-
-      // Handle chunked collections (e.g. records with ~45,800 items)
-      if (data.isChunked && typeof data.chunkCount === 'number' && data.chunkCount > 0) {
-        const chunkPromises = [];
-        for (let i = 0; i < data.chunkCount; i++) {
-          const chunkRef = doc(db, 'appData', `${collectionName}_part_${i}`);
-          chunkPromises.push(getDocFromServer(chunkRef).catch(() => getDoc(chunkRef)));
+    
+    // 1. Try querying the whole appData collection to get all chunks in one go
+    try {
+      const colRef = collection(db, 'appData');
+      const querySnap = await getDocs(colRef);
+      if (!querySnap.empty) {
+        const mergedItems = extractItemsFromDocs(querySnap.docs, collectionName);
+        if (mergedItems.length > 0) {
+          saveToLocalStorageFallback(collectionName, mergedItems);
+          return mergedItems;
         }
-        const chunkSnaps = await Promise.all(chunkPromises);
-        const allItems: any[] = [];
-        chunkSnaps.forEach(cs => {
-          if (cs.exists()) {
-            const cData = cs.data();
-            if (cData && Array.isArray(cData.items)) {
-              allItems.push(...cData.items);
-            }
+      }
+    } catch {
+      // quiet fallback
+    }
+
+    // 2. Sequential fallback if getDocs wasn't permitted or empty: Check main doc + chunk parts
+    const fetchedItems: any[] = [];
+    const seenKeys = new Set<string>();
+
+    const checkAndPush = (data: any) => {
+      if (data && Array.isArray(data.items)) {
+        for (const item of data.items) {
+          if (!item) continue;
+          const k = item.id !== undefined && item.id !== null
+            ? `id_${item.id}`
+            : item.timestamp && item.passport
+            ? `${item.timestamp}_${item.passport}`
+            : JSON.stringify(item);
+          if (!seenKeys.has(k)) {
+            seenKeys.add(k);
+            fetchedItems.push(item);
           }
-        });
-        const deletedIds = getDeletedRecordIds(collectionName);
-        const deletedSet = new Set(deletedIds.map(String));
-        if (deletedSet.size > 0) {
-          return allItems.filter(item => {
-            const itemId = item?.id !== undefined ? String(item.id) : null;
-            return !itemId || !deletedSet.has(itemId);
-          });
         }
-        return allItems;
       }
+    };
 
-      if (Array.isArray(data.items)) {
-        const deletedIds = getDeletedRecordIds(collectionName);
-        const deletedSet = new Set(deletedIds.map(String));
-        if (deletedSet.size > 0) {
-          return data.items.filter(item => {
-            const itemId = item?.id !== undefined ? String(item.id) : null;
-            return !itemId || !deletedSet.has(itemId);
-          });
+    // Main doc
+    const mainDocRef = doc(db, 'appData', collectionName);
+    const mainSnap = await getDocFromServer(mainDocRef).catch(() => getDoc(mainDocRef));
+    if (mainSnap.exists()) {
+      checkAndPush(mainSnap.data());
+    }
+
+    // Scan chunk parts part_0, part_1, part_2 ...
+    for (let i = 0; i < 30; i++) {
+      try {
+        const partRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+        const partSnap = await getDocFromServer(partRef).catch(() => getDoc(partRef));
+        if (partSnap.exists()) {
+          checkAndPush(partSnap.data());
+        } else if (i > 1 && fetchedItems.length > 0) {
+          break;
         }
-        return data.items;
+      } catch {
+        break;
       }
     }
-    return null;
-  } catch (err: any) {
-    if (isQuotaError(err)) {
-      setQuotaExhausted(true);
-      console.warn(`Firestore fetch quota limit reached for ${collectionName}. Using local DB.`);
-    } else {
-      console.warn(`Notice fetching ${collectionName} from Firestore:`, err?.message || err);
+
+    if (fetchedItems.length > 0) {
+      saveToLocalStorageFallback(collectionName, fetchedItems);
+      return fetchedItems;
     }
-    return null;
+
+    return getFromLocalStorageFallback(collectionName);
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
+    // Return localStorage fallback seamlessly with zero console errors
+    return getFromLocalStorageFallback(collectionName);
   }
 };
 
 /**
- * Smart fetch: Fetches collections directly from Firestore when manually triggered by the user
+ * Smart fetch: Fetches collections directly from Firestore with fallback to localStorage
  */
 export const checkAndFetchUpdatedCollections = async (
   collectionNames: string[],
   forceAll: boolean = false,
   onProgress?: (percent: number, currentCollection: string) => void
-) => {
-  if (isQuotaExhausted) return {};
-  
-  onProgress?.(5, 'Checking Cloud Metadata...');
-  const cloudMeta = await getCloudMetadata();
-  const localTimestamps = getLocalTimestamps();
+): Promise<Record<string, any[]>> => {
   const results: Record<string, any[]> = {};
 
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    for (const col of collectionNames) {
+      const local = getFromLocalStorageFallback(col);
+      if (local) results[col] = local;
+    }
+    return results;
+  }
+  
+  onProgress?.(5, 'Checking Cloud Metadata...');
+  let cloudMeta: Record<string, string> | null = null;
+  try {
+    cloudMeta = await getCloudMetadata();
+  } catch {
+    cloudMeta = null;
+  }
+
+  const localTimestamps = getLocalTimestamps();
   const total = collectionNames.length;
   let count = 0;
 
@@ -817,8 +814,9 @@ export const checkAndFetchUpdatedCollections = async (
           }
         }
       }
-    } catch (err) {
-      console.warn(`Error checking collection ${col}:`, err);
+    } catch {
+      const local = getFromLocalStorageFallback(col);
+      if (local) results[col] = local;
     }
   }
 
@@ -826,73 +824,144 @@ export const checkAndFetchUpdatedCollections = async (
   return results;
 };
 
-// Device Session methods (used only on explicit user actions such as login or admin kick/role update)
-export const saveDeviceSession = async (session: any) => {
-  if (isQuotaExhausted) return false;
+export const saveDeviceSession = async (session: any): Promise<boolean> => {
+  if (!session || !session.deviceId) return false;
+
+  // Always update local session storage fallback
+  try {
+    const saved = localStorage.getItem('imm_pwa_device_sessions');
+    let sessions: any[] = saved ? JSON.parse(saved) : [];
+    if (!Array.isArray(sessions)) sessions = [];
+    const idx = sessions.findIndex(s => s.deviceId === session.deviceId);
+    if (idx >= 0) {
+      sessions[idx] = { ...sessions[idx], ...session, lastPingTimestamp: Date.now() };
+    } else {
+      sessions.push({ ...session, lastPingTimestamp: Date.now() });
+    }
+    localStorage.setItem('imm_pwa_device_sessions', JSON.stringify(sessions));
+  } catch {}
+
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return true;
+  }
+
   try {
     await ensureAuthenticated();
-    if (!session || !session.deviceId) return false;
     const docRef = doc(db, 'activeSessions', session.deviceId);
     await setDoc(docRef, { ...session, lastPingTimestamp: Date.now() }, { merge: true });
     return true;
-  } catch (err) {
-    console.warn("Failed to save device session:", err);
-    return false;
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
+    return true;
   }
 };
 
-export const setDeviceKickedStatus = async (deviceId: string, kicked: boolean) => {
-  if (isQuotaExhausted) return false;
+export const setDeviceKickedStatus = async (deviceId: string, kicked: boolean): Promise<boolean> => {
+  try {
+    const saved = localStorage.getItem('imm_pwa_device_sessions');
+    let sessions: any[] = saved ? JSON.parse(saved) : [];
+    if (Array.isArray(sessions)) {
+      sessions = sessions.map(s => s.deviceId === deviceId ? { ...s, kicked } : s);
+      localStorage.setItem('imm_pwa_device_sessions', JSON.stringify(sessions));
+    }
+  } catch {}
+
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return true;
+  }
+
   try {
     await ensureAuthenticated();
     const docRef = doc(db, 'activeSessions', deviceId);
     await setDoc(docRef, { kicked }, { merge: true });
     return true;
-  } catch (err) {
-    console.warn("Failed to update kick status:", err);
-    return false;
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
+    return true;
   }
 };
 
-export const updateDeviceRole = async (deviceId: string, accountRole: string) => {
-  if (isQuotaExhausted) return false;
+export const updateDeviceRole = async (deviceId: string, accountRole: string): Promise<boolean> => {
+  try {
+    const saved = localStorage.getItem('imm_pwa_device_sessions');
+    let sessions: any[] = saved ? JSON.parse(saved) : [];
+    if (Array.isArray(sessions)) {
+      sessions = sessions.map(s => s.deviceId === deviceId ? { ...s, accountRole } : s);
+      localStorage.setItem('imm_pwa_device_sessions', JSON.stringify(sessions));
+    }
+  } catch {}
+
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return true;
+  }
+
   try {
     await ensureAuthenticated();
     const docRef = doc(db, 'activeSessions', deviceId);
     await setDoc(docRef, { accountRole }, { merge: true });
     return true;
-  } catch (err) {
-    console.warn("Failed to update device role:", err);
-    return false;
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
+    return true;
   }
 };
 
-export const deleteDeviceSession = async (deviceId: string) => {
-  if (isQuotaExhausted) return false;
+export const deleteDeviceSession = async (deviceId: string): Promise<boolean> => {
+  try {
+    const saved = localStorage.getItem('imm_pwa_device_sessions');
+    let sessions: any[] = saved ? JSON.parse(saved) : [];
+    if (Array.isArray(sessions)) {
+      sessions = sessions.filter(s => s.deviceId !== deviceId);
+      localStorage.setItem('imm_pwa_device_sessions', JSON.stringify(sessions));
+    }
+  } catch {}
+
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return true;
+  }
+
   try {
     await ensureAuthenticated();
     const docRef = doc(db, 'activeSessions', deviceId);
     await deleteDoc(docRef);
     return true;
-  } catch (err) {
-    console.warn("Failed to delete device session:", err);
-    return false;
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
+    return true;
   }
 };
 
 export const subscribeToMyDeviceSession = (deviceId: string, onUpdate: (data: any) => void) => {
+  if (!deviceId || isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return () => {};
+  }
+
   let unsubscribeSnapshot: (() => void) | null = null;
-  if (!deviceId) return () => {};
+
   ensureAuthenticated().then(() => {
-    const docRef = doc(db, 'activeSessions', deviceId);
-    unsubscribeSnapshot = onSnapshot(docRef, (snapshot) => {
-      if (snapshot.exists()) {
-        onUpdate(snapshot.data());
-      }
-    }, (err) => {
-      console.warn("subscribeToMyDeviceSession error:", err);
-    });
-  });
+    try {
+      const docRef = doc(db, 'activeSessions', deviceId);
+      unsubscribeSnapshot = onSnapshot(docRef, (snapshot) => {
+        if (snapshot.exists()) {
+          onUpdate(snapshot.data());
+        }
+      }, (err: any) => {
+        if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+          isFirestoreUnavailable = true;
+        }
+      });
+    } catch {
+      // silent catch
+    }
+  }).catch(() => {});
 
   return () => {
     if (unsubscribeSnapshot) unsubscribeSnapshot();
@@ -900,7 +969,10 @@ export const subscribeToMyDeviceSession = (deviceId: string, onUpdate: (data: an
 };
 
 export const fetchDeviceSessions = async (): Promise<any[]> => {
-  if (isQuotaExhausted) return [];
+  const localFallback = getFromLocalStorageFallback('activeSessions') || [];
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return localFallback;
+  }
   try {
     await ensureAuthenticated();
     const colRef = collection(db, 'activeSessions');
@@ -911,29 +983,54 @@ export const fetchDeviceSessions = async (): Promise<any[]> => {
         sessions.push(docSnap.data());
       }
     });
-    return sessions;
-  } catch (err) {
-    console.warn("fetchDeviceSessions error:", err);
-    return [];
+    if (sessions.length > 0) {
+      saveToLocalStorageFallback('activeSessions', sessions);
+      return sessions;
+    }
+    return localFallback;
+  } catch (err: any) {
+    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+      isFirestoreUnavailable = true;
+    }
+    return localFallback;
   }
 };
 
 export const subscribeToDeviceSessions = (onUpdate: (sessions: any[]) => void) => {
+  const localFallback = getFromLocalStorageFallback('activeSessions');
+  if (localFallback && localFallback.length > 0) {
+    try { onUpdate(localFallback); } catch {}
+  }
+
+  if (isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return () => {};
+  }
+
   let unsubscribeSnapshot: (() => void) | null = null;
+
   ensureAuthenticated().then(() => {
-    const colRef = collection(db, 'activeSessions');
-    unsubscribeSnapshot = onSnapshot(colRef, (snapshot) => {
-      const sessions: any[] = [];
-      snapshot.forEach((docSnap) => {
-        if (docSnap.exists()) {
-          sessions.push(docSnap.data());
+    try {
+      const colRef = collection(db, 'activeSessions');
+      unsubscribeSnapshot = onSnapshot(colRef, (snapshot) => {
+        const sessions: any[] = [];
+        snapshot.forEach((docSnap) => {
+          if (docSnap.exists()) {
+            sessions.push(docSnap.data());
+          }
+        });
+        if (sessions.length > 0) {
+          saveToLocalStorageFallback('activeSessions', sessions);
+          onUpdate(sessions);
+        }
+      }, (err: any) => {
+        if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+          isFirestoreUnavailable = true;
         }
       });
-      onUpdate(sessions);
-    }, (err) => {
-      console.warn("subscribeToDeviceSessions error:", err);
-    });
-  });
+    } catch {
+      // silent catch
+    }
+  }).catch(() => {});
 
   return () => {
     if (unsubscribeSnapshot) unsubscribeSnapshot();

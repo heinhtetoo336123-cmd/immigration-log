@@ -76,7 +76,7 @@ export interface MasterItem {
   serverSyncedAt?: string;
 }
 
-export type Tab = 'entry' | 'data' | 'movement' | 'stillIn' | 'daily' | 'master' | 'tableOutput' | 'customReport' | 'checking' | 'individualSearch' | 'alarm' | 'telegraph' | 'watchList' | 'info' | 'auditLog';
+export type Tab = 'entry' | 'data' | 'movement' | 'stillIn' | 'daily' | 'master' | 'tableOutput' | 'customReport' | 'individualSearch' | 'alarm' | 'telegraph' | 'watchList' | 'info' | 'auditLog';
 
 export interface WatchListPerson {
   id: string;
@@ -193,28 +193,6 @@ export interface MovementData {
   permittedBy?: string;
   remarks?: string;
   isStillIn?: boolean;
-}
-
-export interface CheckingHistoryEntry {
-  id: string;
-  passport: string;
-  fullname: string;
-  nationality: string;
-  type: 'CO_LTD' | 'OTHERS';
-  checkDate: string; // YYYY-MM-DD
-  originalAddress: string;
-  confirmedAddress: string;
-  confirmedStayDescription?: string;
-  status: PermitStatus | string;
-  permittedBy?: string;
-  officerName: string;
-  officerTitle: string;
-  timestamp: string;
-  previousPassport?: string;
-  dualPassportRemarks?: string;
-  linkedPassports?: string[];
-  syncStatus?: 'pending_sync' | 'upload_failed' | 'synced';
-  updatedAt?: string;
 }
 
 export interface DossierRecord {
