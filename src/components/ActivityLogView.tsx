@@ -71,14 +71,7 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
   };
 
   useEffect(() => {
-    fetchLogs(true);
-    
-    // Subscribe to real-time cloud updates across all user actions
-    const unsubscribeCloud = subscribeToCloudActivityLogs((cloudLogs) => {
-      if (Array.isArray(cloudLogs) && cloudLogs.length > 0) {
-        setLogs(cloudLogs);
-      }
-    });
+    fetchLogs(false);
 
     const handleLogEvent = () => {
       fetchLogs(false);
@@ -86,7 +79,6 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
     window.addEventListener('imm_activity_logged', handleLogEvent);
     
     return () => {
-      if (unsubscribeCloud) unsubscribeCloud();
       window.removeEventListener('imm_activity_logged', handleLogEvent);
     };
   }, []);

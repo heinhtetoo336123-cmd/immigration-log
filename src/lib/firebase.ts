@@ -301,16 +301,28 @@ export const setLocalTimestamp = (collectionName: string, timestamp: string) => 
   }
 };
 
-export const getCloudMetadata = async (): Promise<Record<string, string> | null> => {
+// In-memory cache for metadata to prevent repeated Firestore reads
+let cachedMetadata: { data: Record<string, string>; fetchedAt: number } | null = null;
+const METADATA_CACHE_TTL_MS = 15000; // 15 seconds cache
+
+export const getCloudMetadata = async (force: boolean = false): Promise<Record<string, string> | null> => {
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return null;
   }
+
+  const now = Date.now();
+  if (!force && cachedMetadata && (now - cachedMetadata.fetchedAt < METADATA_CACHE_TTL_MS)) {
+    return cachedMetadata.data;
+  }
+
   try {
     await ensureAuthenticated();
     const metaRef = doc(db, 'appData', '_metadata');
     const snapshot = await getDocFromServer(metaRef).catch(() => getDoc(metaRef));
     if (snapshot.exists()) {
-      return snapshot.data() as Record<string, string>;
+      const data = snapshot.data() as Record<string, string>;
+      cachedMetadata = { data, fetchedAt: Date.now() };
+      return data;
     }
     return null;
   } catch (err: any) {
@@ -320,7 +332,6 @@ export const getCloudMetadata = async (): Promise<Record<string, string> | null>
     if (isQuotaError(err)) {
       setQuotaExhausted(true);
     }
-    // Return null silently - zero console error loop
     return null;
   }
 };
@@ -451,13 +462,12 @@ export const saveCollectionToFirestore = async (
   collectionName: string, 
   items: any[], 
   force: boolean = false,
-  mergeWithRemote: boolean = true
+  _deprecatedMerge?: boolean
 ): Promise<boolean> => {
-  // Always safely back up items to localStorage fallback immediately
+  // Always safely back up items to localStorage fallback immediately (0ms local save)
   saveToLocalStorageFallback(collectionName, items);
 
   if (isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    // Data is safely saved to localStorage fallback, return true so callers know local persistence succeeded
     return true;
   }
 
@@ -466,50 +476,23 @@ export const saveCollectionToFirestore = async (
   }
 
   try {
-    await ensureAuthenticated();
     const currentJson = JSON.stringify(items || []);
+    // Skip network if hash has not changed and not forced
     if (!force && lastSyncedHashes.get(collectionName) === currentJson) {
       return true;
     }
 
+    await ensureAuthenticated();
     const cleanItems: any[] = JSON.parse(currentJson);
     const now = new Date().toISOString();
-    let finalItems = cleanItems;
 
-    if (mergeWithRemote) {
-      try {
-        const colRef = collection(db, 'appData');
-        const querySnap = await getDocs(colRef).catch(() => null);
-        if (querySnap && !querySnap.empty) {
-          const remoteItems = extractItemsFromDocs(querySnap.docs, collectionName);
-          if (remoteItems.length > 0) {
-            finalItems = mergeCollectionItems(cleanItems, remoteItems, 'id');
-          }
-        } else {
-          // Fallback to single doc fetch
-          const docRef = doc(db, 'appData', collectionName);
-          const snap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
-          if (snap.exists()) {
-            const remoteData = snap.data();
-            if (remoteData && Array.isArray(remoteData.items) && remoteData.items.length > 0) {
-              finalItems = mergeCollectionItems(cleanItems, remoteData.items, 'id');
-            }
-          }
-        }
-      } catch (mergeErr) {
-        if (isOfflineOrNetworkError(mergeErr)) {
-          isFirestoreUnavailable = true;
-        }
-      }
-    }
-
-    const serverItems = finalItems.map(item => ({
+    const serverItems = cleanItems.map(item => ({
       ...item,
       syncStatus: 'synced',
       serverSyncedAt: item.serverSyncedAt || now
     }));
 
-    // If large collection (> 350 items), chunk into multiple parts to stay well under 1MB limit
+    // If large collection (> 350 items), chunk into multiple parts
     const CHUNK_SIZE = 350;
     const docRef = doc(db, 'appData', collectionName);
 
@@ -529,7 +512,6 @@ export const saveCollectionToFirestore = async (
         }));
       }
 
-      // Also write root doc with reference/first chunk & count
       writePromises.push(setDoc(docRef, {
         items: serverItems.slice(0, CHUNK_SIZE),
         totalCount: serverItems.length,
@@ -548,11 +530,15 @@ export const saveCollectionToFirestore = async (
       });
     }
     
+    // Update lightweight metadata timestamp (1 small write)
     const metaRef = doc(db, 'appData', '_metadata');
     setDoc(metaRef, { 
       [collectionName]: now,
       [`${collectionName}_count`]: serverItems.length 
     }, { merge: true }).catch(() => {});
+
+    // Invalidate local metadata cache so future checks see latest
+    cachedMetadata = null;
 
     const newHash = JSON.stringify(serverItems);
     lastSyncedHashes.set(collectionName, newHash);
@@ -560,10 +546,9 @@ export const saveCollectionToFirestore = async (
     saveToLocalStorageFallback(collectionName, serverItems);
     return true;
   } catch (err: any) {
-    // Suppress all console.warn / console.error for database not found or network errors
     if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
       isFirestoreUnavailable = true;
-      return true; // LocalStorage fallback is safely updated
+      return true;
     }
     if (isQuotaError(err)) {
       setQuotaExhausted(true);
@@ -589,34 +574,19 @@ export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> =>
     return null;
   }
   try {
-    await ensureAuthenticated();
-    const colRef = collection(db, 'appData');
-    const querySnap = await getDocs(colRef).catch(() => null);
+    const meta = await getCloudMetadata(false);
+    if (!meta) return null;
 
-    if (querySnap && !querySnap.empty) {
-      const docs = querySnap.docs;
-      const metaDoc = docs.find(d => d.id === '_metadata');
-      const metadata = metaDoc ? (metaDoc.data() as Record<string, string>) : {};
-
-      const getCollectionCount = (colName: string): number => {
-        const items = extractItemsFromDocs(docs, colName);
-        return items.length;
-      };
-
-      return {
-        recordsCount: getCollectionCount('records'),
-        tempRecordsCount: getCollectionCount('tempRecords'),
-        masterDataCount: getCollectionCount('masterData'),
-        vehicleSummariesCount: getCollectionCount('vehicleSummaries'),
-        dossierHistoryCount: getCollectionCount('dossierHistory'),
-        watchListCount: getCollectionCount('watchList'),
-        metadata,
-        lastUpdated: metadata?.records || new Date().toISOString()
-      };
-    }
-
-    // Fallback if querySnap is empty
-    return null;
+    return {
+      recordsCount: parseInt(meta['records_count'] || '0', 10),
+      tempRecordsCount: parseInt(meta['tempRecords_count'] || '0', 10),
+      masterDataCount: parseInt(meta['masterData_count'] || '0', 10),
+      vehicleSummariesCount: parseInt(meta['vehicleSummaries_count'] || '0', 10),
+      dossierHistoryCount: parseInt(meta['dossierHistory_count'] || '0', 10),
+      watchListCount: parseInt(meta['watchList_count'] || '0', 10),
+      metadata: meta,
+      lastUpdated: meta.records || new Date().toISOString()
+    };
   } catch (err: any) {
     if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
       isFirestoreUnavailable = true;
@@ -625,59 +595,19 @@ export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> =>
   }
 };
 
+// Deprecated continuous snapshot listener: Serves local data immediately and returns noop cleanup
 export const subscribeToFirestoreCollection = (
   collectionName: string, 
   onUpdate: (items: any[]) => void
 ) => {
-  // Immediately feed current local fallback data to listener
   const localFallback = getFromLocalStorageFallback(collectionName);
   if (localFallback && localFallback.length > 0) {
     try { onUpdate(localFallback); } catch {}
   }
-
-  if (isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return () => {};
-  }
-
-  let unsubscribeSnapshot: (() => void) | null = null;
-  let isUnsubscribed = false;
-
-  ensureAuthenticated().then(() => {
-    if (isUnsubscribed || isFirestoreUnavailable) return;
-    try {
-      const colRef = collection(db, 'appData');
-      unsubscribeSnapshot = onSnapshot(colRef, (snapshot) => {
-        if (!snapshot.empty) {
-          const mergedItems = extractItemsFromDocs(snapshot.docs, collectionName);
-          if (mergedItems.length > 0) {
-            const jsonStr = JSON.stringify(mergedItems);
-            if (lastSyncedHashes.get(collectionName) === jsonStr) {
-              return;
-            }
-            lastSyncedHashes.set(collectionName, jsonStr);
-            saveToLocalStorageFallback(collectionName, mergedItems);
-            onUpdate(mergedItems);
-          }
-        }
-      }, (err: any) => {
-        // Silent fail / suppress error loop
-        if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-          isFirestoreUnavailable = true;
-        }
-      });
-    } catch {
-      // quiet catch
-    }
-  }).catch(() => {});
-
-  return () => {
-    isUnsubscribed = true;
-    if (unsubscribeSnapshot) {
-      unsubscribeSnapshot();
-    }
-  };
+  return () => {};
 };
 
+// Single-document direct fetcher (no full collection scans)
 export const fetchCollectionFromFirestore = async (collectionName: string): Promise<any[] | null> => {
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return getFromLocalStorageFallback(collectionName);
@@ -685,67 +615,40 @@ export const fetchCollectionFromFirestore = async (collectionName: string): Prom
   try {
     await ensureAuthenticated();
     
-    // 1. Try querying the whole appData collection to get all chunks in one go
-    try {
-      const colRef = collection(db, 'appData');
-      const querySnap = await getDocs(colRef);
-      if (!querySnap.empty) {
-        const mergedItems = extractItemsFromDocs(querySnap.docs, collectionName);
-        if (mergedItems.length > 0) {
-          saveToLocalStorageFallback(collectionName, mergedItems);
-          return mergedItems;
-        }
-      }
-    } catch {
-      // quiet fallback
+    const mainDocRef = doc(db, 'appData', collectionName);
+    const mainSnap = await getDocFromServer(mainDocRef).catch(() => getDoc(mainDocRef));
+    
+    if (!mainSnap.exists()) {
+      return getFromLocalStorageFallback(collectionName);
     }
 
-    // 2. Sequential fallback if getDocs wasn't permitted or empty: Check main doc + chunk parts
-    const fetchedItems: any[] = [];
-    const seenKeys = new Set<string>();
+    const mainData = mainSnap.data();
+    if (!mainData) return getFromLocalStorageFallback(collectionName);
 
-    const checkAndPush = (data: any) => {
-      if (data && Array.isArray(data.items)) {
-        for (const item of data.items) {
-          if (!item) continue;
-          const k = item.id !== undefined && item.id !== null
-            ? `id_${item.id}`
-            : item.timestamp && item.passport
-            ? `${item.timestamp}_${item.passport}`
-            : JSON.stringify(item);
-          if (!seenKeys.has(k)) {
-            seenKeys.add(k);
-            fetchedItems.push(item);
+    let allItems: any[] = Array.isArray(mainData.items) ? [...mainData.items] : [];
+
+    // If chunked and totalParts > 1, fetch only existing chunk documents in parallel
+    if (mainData.isChunked && typeof mainData.totalParts === 'number' && mainData.totalParts > 1) {
+      const partPromises: Promise<any>[] = [];
+      for (let i = 1; i < mainData.totalParts; i++) {
+        const partRef = doc(db, 'appData', `${collectionName}_part_${i}`);
+        partPromises.push(getDocFromServer(partRef).catch(() => getDoc(partRef)));
+      }
+      const partSnaps = await Promise.all(partPromises);
+      for (const pSnap of partSnaps) {
+        if (pSnap && pSnap.exists()) {
+          const pData = pSnap.data();
+          if (pData && Array.isArray(pData.items)) {
+            allItems = allItems.concat(pData.items);
           }
         }
       }
-    };
-
-    // Main doc
-    const mainDocRef = doc(db, 'appData', collectionName);
-    const mainSnap = await getDocFromServer(mainDocRef).catch(() => getDoc(mainDocRef));
-    if (mainSnap.exists()) {
-      checkAndPush(mainSnap.data());
     }
 
-    // Scan chunk parts part_0, part_1, part_2 ...
-    for (let i = 0; i < 30; i++) {
-      try {
-        const partRef = doc(db, 'appData', `${collectionName}_part_${i}`);
-        const partSnap = await getDocFromServer(partRef).catch(() => getDoc(partRef));
-        if (partSnap.exists()) {
-          checkAndPush(partSnap.data());
-        } else if (i > 1 && fetchedItems.length > 0) {
-          break;
-        }
-      } catch {
-        break;
-      }
-    }
-
-    if (fetchedItems.length > 0) {
-      saveToLocalStorageFallback(collectionName, fetchedItems);
-      return fetchedItems;
+    if (allItems.length > 0) {
+      saveToLocalStorageFallback(collectionName, allItems);
+      setSyncedHash(collectionName, allItems);
+      return allItems;
     }
 
     return getFromLocalStorageFallback(collectionName);
@@ -753,13 +656,15 @@ export const fetchCollectionFromFirestore = async (collectionName: string): Prom
     if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
       isFirestoreUnavailable = true;
     }
-    // Return localStorage fallback seamlessly with zero console errors
     return getFromLocalStorageFallback(collectionName);
   }
 };
 
 /**
- * Smart fetch: Fetches collections directly from Firestore with fallback to localStorage
+ * Smart metadata-based conditional sync:
+ * 1. Reads ONLY 1 metadata document to compare timestamps.
+ * 2. Only fetches records if the remote timestamp is strictly newer than local timestamp.
+ * 3. Skips unchanged collections completely (0 reads).
  */
 export const checkAndFetchUpdatedCollections = async (
   collectionNames: string[],
@@ -779,7 +684,7 @@ export const checkAndFetchUpdatedCollections = async (
   onProgress?.(5, 'Checking Cloud Metadata...');
   let cloudMeta: Record<string, string> | null = null;
   try {
-    cloudMeta = await getCloudMetadata();
+    cloudMeta = await getCloudMetadata(forceAll);
   } catch {
     cloudMeta = null;
   }
@@ -800,18 +705,12 @@ export const checkAndFetchUpdatedCollections = async (
 
       const isRemoteNewerByMeta = remoteTime && (!localTime || new Date(remoteTime).getTime() > new Date(localTime).getTime());
 
+      // STRICT CHECK: Only query Firestore document if remote timestamp is strictly newer or forced
       if (forceAll || isRemoteNewerByMeta || !localHash) {
         const items = await fetchCollectionFromFirestore(col);
-        if (Array.isArray(items)) {
+        if (Array.isArray(items) && items.length > 0) {
           results[col] = items;
-        }
-      } else {
-        const items = await fetchCollectionFromFirestore(col);
-        if (Array.isArray(items)) {
-          const remoteHash = JSON.stringify(items);
-          if (localHash !== remoteHash) {
-            results[col] = items;
-          }
+          if (remoteTime) setLocalTimestamp(col, remoteTime);
         }
       }
     } catch {
@@ -824,7 +723,11 @@ export const checkAndFetchUpdatedCollections = async (
   return results;
 };
 
-export const saveDeviceSession = async (session: any): Promise<boolean> => {
+// In-memory throttling for device session heartbeats (10 minutes)
+let lastDeviceSessionPingTime = 0;
+const SESSION_PING_THROTTLE_MS = 10 * 60 * 1000;
+
+export const saveDeviceSession = async (session: any, force: boolean = false): Promise<boolean> => {
   if (!session || !session.deviceId) return false;
 
   // Always update local session storage fallback
@@ -845,10 +748,16 @@ export const saveDeviceSession = async (session: any): Promise<boolean> => {
     return true;
   }
 
+  const now = Date.now();
+  if (!force && (now - lastDeviceSessionPingTime < SESSION_PING_THROTTLE_MS)) {
+    return true; // Throttled to save writes
+  }
+
   try {
     await ensureAuthenticated();
     const docRef = doc(db, 'activeSessions', session.deviceId);
     await setDoc(docRef, { ...session, lastPingTimestamp: Date.now() }, { merge: true });
+    lastDeviceSessionPingTime = Date.now();
     return true;
   } catch (err: any) {
     if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
@@ -939,40 +848,35 @@ export const deleteDeviceSession = async (deviceId: string): Promise<boolean> =>
   }
 };
 
+// No real-time subscription loop - reads locally
 export const subscribeToMyDeviceSession = (deviceId: string, onUpdate: (data: any) => void) => {
-  if (!deviceId || isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return () => {};
-  }
-
-  let unsubscribeSnapshot: (() => void) | null = null;
-
-  ensureAuthenticated().then(() => {
-    try {
-      const docRef = doc(db, 'activeSessions', deviceId);
-      unsubscribeSnapshot = onSnapshot(docRef, (snapshot) => {
-        if (snapshot.exists()) {
-          onUpdate(snapshot.data());
-        }
-      }, (err: any) => {
-        if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-          isFirestoreUnavailable = true;
-        }
-      });
-    } catch {
-      // silent catch
+  if (!deviceId) return () => {};
+  try {
+    const saved = localStorage.getItem('imm_pwa_device_sessions');
+    if (saved) {
+      const sessions = JSON.parse(saved);
+      const mySession = sessions.find((s: any) => s.deviceId === deviceId);
+      if (mySession) onUpdate(mySession);
     }
-  }).catch(() => {});
-
-  return () => {
-    if (unsubscribeSnapshot) unsubscribeSnapshot();
-  };
+  } catch {}
+  return () => {};
 };
 
-export const fetchDeviceSessions = async (): Promise<any[]> => {
+// Throttled in-memory session fetcher (10 minutes cache)
+let cachedDeviceSessions: { data: any[]; fetchedAt: number } | null = null;
+const SESSIONS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+export const fetchDeviceSessions = async (force: boolean = false): Promise<any[]> => {
   const localFallback = getFromLocalStorageFallback('activeSessions') || [];
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return localFallback;
   }
+
+  const now = Date.now();
+  if (!force && cachedDeviceSessions && (now - cachedDeviceSessions.fetchedAt < SESSIONS_CACHE_TTL_MS)) {
+    return cachedDeviceSessions.data;
+  }
+
   try {
     await ensureAuthenticated();
     const colRef = collection(db, 'activeSessions');
@@ -984,6 +888,7 @@ export const fetchDeviceSessions = async (): Promise<any[]> => {
       }
     });
     if (sessions.length > 0) {
+      cachedDeviceSessions = { data: sessions, fetchedAt: Date.now() };
       saveToLocalStorageFallback('activeSessions', sessions);
       return sessions;
     }
@@ -1001,38 +906,5 @@ export const subscribeToDeviceSessions = (onUpdate: (sessions: any[]) => void) =
   if (localFallback && localFallback.length > 0) {
     try { onUpdate(localFallback); } catch {}
   }
-
-  if (isFirestoreUnavailable || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return () => {};
-  }
-
-  let unsubscribeSnapshot: (() => void) | null = null;
-
-  ensureAuthenticated().then(() => {
-    try {
-      const colRef = collection(db, 'activeSessions');
-      unsubscribeSnapshot = onSnapshot(colRef, (snapshot) => {
-        const sessions: any[] = [];
-        snapshot.forEach((docSnap) => {
-          if (docSnap.exists()) {
-            sessions.push(docSnap.data());
-          }
-        });
-        if (sessions.length > 0) {
-          saveToLocalStorageFallback('activeSessions', sessions);
-          onUpdate(sessions);
-        }
-      }, (err: any) => {
-        if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-          isFirestoreUnavailable = true;
-        }
-      });
-    } catch {
-      // silent catch
-    }
-  }).catch(() => {});
-
-  return () => {
-    if (unsubscribeSnapshot) unsubscribeSnapshot();
-  };
+  return () => {};
 };

@@ -6106,30 +6106,6 @@ export default function App() {
       }
     };
 
-    // 25-Second Periodic Background Smart Poll & Window Focus Sync (Auto-receives updates from other devices/phones)
-    useEffect(() => {
-      if (!cloudAuthUser || cloudAuthUser.username === 'LOCAL_OFFLINE') return;
-
-      const backgroundSyncInterval = setInterval(() => {
-        if (isOnline && !getIsQuotaExhausted() && document.visibilityState === 'visible' && !isRemoteSyncingRef.current && !isAutoSyncing) {
-          handleFetchDataFromCloud(false, true).catch(() => {});
-        }
-      }, 25000);
-
-      const handleFocus = () => {
-        if (isOnline && !isRemoteSyncingRef.current && !isAutoSyncing) {
-          handleFetchDataFromCloud(false, true).catch(() => {});
-        }
-      };
-
-      window.addEventListener('focus', handleFocus);
-
-      return () => {
-        clearInterval(backgroundSyncInterval);
-        window.removeEventListener('focus', handleFocus);
-      };
-    }, [cloudAuthUser, isOnline, isAutoSyncing]);
-
     // Startup Launch Sequence: Check if Cloud Auth exists
     useEffect(() => {
       const savedCloud = localStorage.getItem('imm_pwa_cloud_auth_user');
@@ -6534,97 +6510,20 @@ export default function App() {
       }
     }, [activePrintPreview]);
 
-    // Real-Time 2-Way Auto-Sync Snapshot Listeners from Cloud Firestore (immi-log-sys)
-    useEffect(() => {
-      const unsubRecords = subscribeToFirestoreCollection('records', (cloudRecords) => {
-        if (Array.isArray(cloudRecords) && cloudRecords.length > 0) {
-          setRecords(prev => {
-            const merged = mergeByUniqueKey(prev, cloudRecords, 'id');
-            localStorage.setItem('imm_records_react', JSON.stringify(merged));
-            miniDB.set('records', merged).catch(() => {});
-            return merged;
-          });
-        }
-      });
-
-      const unsubTemp = subscribeToFirestoreCollection('tempRecords', (cloudTemps) => {
-        if (Array.isArray(cloudTemps) && cloudTemps.length > 0) {
-          setTempRecords(prev => {
-            const merged = mergeByUniqueKey(prev, cloudTemps, 'id');
-            localStorage.setItem('imm_temp_records_react', JSON.stringify(merged));
-            miniDB.set('tempRecords', merged).catch(() => {});
-            return merged;
-          });
-        }
-      });
-
-      const unsubMaster = subscribeToFirestoreCollection('masterData', (cloudMaster) => {
-        if (Array.isArray(cloudMaster) && cloudMaster.length > 0) {
-          setMasterData(prev => {
-            const merged = mergeByUniqueKey(prev, cloudMaster, 'id');
-            localStorage.setItem('imm_master_react', JSON.stringify(merged));
-            miniDB.set('masterData', merged).catch(() => {});
-            return merged;
-          });
-        }
-      });
-
-      const unsubVehicles = subscribeToFirestoreCollection('vehicleSummaries', (cloudVehicles) => {
-        if (Array.isArray(cloudVehicles) && cloudVehicles.length > 0) {
-          setVehicleSummaries(prev => {
-            const merged = mergeByUniqueKey(prev, cloudVehicles, 'id');
-            localStorage.setItem('imm_vehicle_summaries', JSON.stringify(merged));
-            miniDB.set('vehicleSummaries', merged).catch(() => {});
-            return merged;
-          });
-        }
-      });
-
-      const unsubDossier = subscribeToFirestoreCollection('dossierHistory', (cloudDossier) => {
-        if (Array.isArray(cloudDossier) && cloudDossier.length > 0) {
-          setDossierHistory(prev => {
-            const merged = mergeByUniqueKey(prev, cloudDossier, 'id');
-            localStorage.setItem('imm_dossier_history_react', JSON.stringify(merged));
-            miniDB.set('dossierHistory', merged).catch(() => {});
-            return merged;
-          });
-        }
-      });
-
-      const unsubWatch = subscribeToFirestoreCollection('watchList', (cloudWatch) => {
-        if (Array.isArray(cloudWatch) && cloudWatch.length > 0) {
-          setWatchList(prev => {
-            const merged = mergeByUniqueKey(prev, cloudWatch, 'id');
-            localStorage.setItem('imm_watchlist_records_v1', JSON.stringify(merged));
-            miniDB.set('watchList', merged).catch(() => {});
-            return merged;
-          });
-        }
-      });
-
-      return () => {
-        if (unsubRecords) unsubRecords();
-        if (unsubTemp) unsubTemp();
-        if (unsubMaster) unsubMaster();
-        if (unsubVehicles) unsubVehicles();
-        if (unsubDossier) unsubDossier();
-        if (unsubWatch) unsubWatch();
-      };
-    }, []);
-
-    // Debounced automatic background sync to Cloud Firestore when local state changes
+    // Debounced automatic background sync to Cloud Firestore when local state changes (3000ms debounce)
     useEffect(() => {
       if (!isDBCardLoaded || !isOnline || isRemoteSyncingRef.current || getIsQuotaExhausted()) return;
 
       if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
       autoSyncTimerRef.current = setTimeout(() => {
+        // saveCollectionToFirestore internally checks hash so only dirty collections trigger network writes
         saveCollectionToFirestore('records', records).catch(() => {});
         saveCollectionToFirestore('tempRecords', tempRecords).catch(() => {});
         saveCollectionToFirestore('masterData', masterData).catch(() => {});
         saveCollectionToFirestore('vehicleSummaries', vehicleSummaries).catch(() => {});
         saveCollectionToFirestore('dossierHistory', dossierHistory).catch(() => {});
         saveCollectionToFirestore('watchList', watchList).catch(() => {});
-      }, 1500);
+      }, 3000);
 
       return () => {
         if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);

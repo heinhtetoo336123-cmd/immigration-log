@@ -1,12 +1,12 @@
 {
   "projectId": "immi-log-sys",
-  "appId": "1:620327157042:web:f9ae44e458db4e07c86b2b",
-  "apiKey": "AIzaSyB1WGx8_qxykhycfhdNfqm-ewUdixj-a3I",
+  "appId": "1:224760074381:web:2f95bda471b6f7a43492c4",
+  "apiKey": "AIzaSyCnl9z3CNPYksrzHXvmR7O4YJbb_mCAk9M",
   "authDomain": "immi-log-sys.firebaseapp.com",
-  "firestoreDatabaseId": "(default)",
-  "storageBucket": "yachty-source-nxnr0.firebasestorage.app",
-  "messagingSenderId": "620327157042",
+  "firestoreDatabaseId": "ai-studio-immigrationlogsy-00b0f03b-9029-4198-ab72-1ee145a6510c",
+  "storageBucket": "immi-log-sys.firebasestorage.app",
+  "messagingSenderId": "224760074381",
   "measurementId": "",
-  "oAuthClientId": "620327157042-m5pd6c1vqn5f9228g2t1at73r0baosvu.apps.googleusercontent.com",
+  "oAuthClientId": "224760074381-dk9gh5mk4vtfujq7aeho7itb0sr2stkd.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }
