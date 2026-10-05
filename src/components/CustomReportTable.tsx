@@ -13,7 +13,7 @@ import { ImmRecord, MovementData, MasterItem, CRTColumnId } from '../types';
 import { CRT_COLUMNS_DEFINITION, ALL_COLUMN_IDS } from '../utils/crtPresets';
 import { CustomReportColumnModal } from './CustomReportColumnModal';
 import { logActivity } from '../utils/activityLogger';
-import { formatToDDMMYYYY, normalizeStandardDate } from '../App';
+import { formatToDDMMYYYY, normalizeStandardDate, parseTimestamp } from '../App';
 
 interface CustomReportTableProps {
   records: ImmRecord[];
@@ -273,6 +273,46 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
     return 0;
   };
 
+  // Helper to accurately calculate stay days since latest arrival date (1-indexed stay duration)
+  const calculateElapsedDays = (inTimeOrDate: string | number | undefined, refDateStr: string): number => {
+    if (!inTimeOrDate) return 0;
+    let arrMs = typeof inTimeOrDate === 'number' ? inTimeOrDate : 0;
+    if (!arrMs && typeof inTimeOrDate === 'string') {
+      arrMs = parseTimestamp(inTimeOrDate) || parseDateToMs(inTimeOrDate);
+    }
+    if (!arrMs) return 0;
+
+    const arrDate = new Date(arrMs);
+    if (isNaN(arrDate.getTime())) return 0;
+    const arrZero = new Date(arrDate.getFullYear(), arrDate.getMonth(), arrDate.getDate()).getTime();
+
+    let refDate: Date;
+    if (refDateStr) {
+      const parts = refDateStr.split(/[-\/]/);
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          // YYYY-MM-DD
+          refDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+        } else if (parts[2].length === 4) {
+          // DD-MM-YYYY
+          refDate = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+        } else {
+          refDate = new Date(refDateStr);
+        }
+      } else {
+        refDate = new Date(refDateStr);
+      }
+    } else {
+      refDate = new Date();
+    }
+    if (isNaN(refDate.getTime())) refDate = new Date();
+    const refZero = new Date(refDate.getFullYear(), refDate.getMonth(), refDate.getDate()).getTime();
+
+    const diffDays = Math.round((refZero - arrZero) / (1000 * 60 * 60 * 24));
+    if (diffDays < 0) return 1;
+    return diffDays + 1; // 1-indexed stay days: arrived today = 1 day, yesterday = 2 days
+  };
+
   // Base Data Extraction matching exact Still In Movement Log logic & reference date
   const basePoolRows: CustomReportRow[] = useMemo(() => {
     const selectedDateStr = selectedDate || today;
@@ -309,19 +349,7 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
         const mov = movementMap[pp];
         const arrDate = mov.in ? (mov.in.includes('T') ? mov.in.split('T')[0] : mov.in.split(' ')[0]) : '';
         const inTime = mov.inTime || parseDateToMs(mov.in);
-        
-        let elapsed = 0;
-        if (inTime > 0) {
-          const refTime = new Date(selectedDateStr).getTime();
-          const diffMs = refTime - inTime;
-          elapsed = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
-        } else if (arrDate) {
-          const aMs = parseDateToMs(arrDate);
-          const rMs = parseDateToMs(selectedDateStr);
-          if (aMs && rMs) {
-            elapsed = Math.max(0, Math.floor((rMs - aMs) / (1000 * 60 * 60 * 24)));
-          }
-        }
+        const elapsed = calculateElapsedDays(inTime || arrDate, selectedDateStr);
 
         const addr = mov.loc || '-';
         const nat = mov.nat || '-';
@@ -363,13 +391,7 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
       const pp = r.passportNo || r.passport || `REC-${idx}`;
       const arrDate = r.flightDate || r.formC?.date || r.date || (r.timestamp ? r.timestamp.split('T')[0] : '');
       const inTime = r.timestamp ? parseDateToMs(r.timestamp) : 0;
-
-      let elapsed = 0;
-      if (inTime > 0) {
-        const refTime = new Date(selectedDateStr).getTime();
-        const diffMs = refTime - inTime;
-        elapsed = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
-      }
+      const elapsed = calculateElapsedDays(inTime || arrDate, selectedDateStr);
 
       const addr = r.formC?.address || r.address || '-';
       const nat = r.nationality || '-';
