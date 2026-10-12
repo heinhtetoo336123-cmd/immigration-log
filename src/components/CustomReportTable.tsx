@@ -43,6 +43,269 @@ export interface CustomReportRow {
   orderIndex: number;
 }
 
+// Parse any date/timestamp into milliseconds safely
+export const parseDateToMs = (dateStr?: string | number): number => {
+  if (!dateStr) return 0;
+  if (typeof dateStr === 'number') return dateStr;
+  const str = String(dateStr).trim();
+  if (/^\d+$/.test(str)) return parseInt(str, 10);
+  const parsed = Date.parse(str);
+  if (!isNaN(parsed)) return parsed;
+  // Format DD-MM-YYYY or DD/MM/YYYY
+  const parts = str.split(/[-\/]/);
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      return new Date(`${parts[0]}-${parts[1]}-${parts[2]}`).getTime() || 0;
+    }
+    return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).getTime() || 0;
+  }
+  return 0;
+};
+
+// Helper to accurately calculate stay days since latest arrival date (1-indexed stay duration)
+export const calculateElapsedDays = (inTimeOrDate: string | number | undefined, refDateStr?: string): number => {
+  if (!inTimeOrDate) return 0;
+  let arrMs = typeof inTimeOrDate === 'number' ? inTimeOrDate : 0;
+  if (!arrMs && typeof inTimeOrDate === 'string') {
+    arrMs = parseTimestamp(inTimeOrDate) || parseDateToMs(inTimeOrDate);
+  }
+  if (!arrMs) return 0;
+
+  const arrDate = new Date(arrMs);
+  if (isNaN(arrDate.getTime())) return 0;
+  const arrZero = new Date(arrDate.getFullYear(), arrDate.getMonth(), arrDate.getDate()).getTime();
+
+  let refDate: Date;
+  if (refDateStr) {
+    const parts = refDateStr.split(/[-\/]/);
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        // YYYY-MM-DD
+        refDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+      } else if (parts[2].length === 4) {
+        // DD-MM-YYYY
+        refDate = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+      } else {
+        refDate = new Date(refDateStr);
+      }
+    } else {
+      refDate = new Date(refDateStr);
+    }
+  } else {
+    refDate = new Date();
+  }
+  if (isNaN(refDate.getTime())) refDate = new Date();
+  const refZero = new Date(refDate.getFullYear(), refDate.getMonth(), refDate.getDate()).getTime();
+
+  const diffDays = Math.round((refZero - arrZero) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return 1;
+  return diffDays + 1; // 1-indexed stay days: arrived today = 1 day, yesterday = 2 days
+};
+
+export interface CRTActiveRecordItem {
+  id: string;
+  passport: string;
+  p: string;
+  nationality: string;
+  nat: string;
+  fullname: string;
+  n: string;
+  gender: 'M' | 'F' | '';
+  visaType: string;
+  visa: string;
+  visaNumber: string;
+  dob: string;
+  stayFrom: string;
+  start: string;
+  stayTo: string;
+  end: string;
+  lastArrivalDate: string;
+  in: string;
+  arrivalTimestampMs: number;
+  inTime: number;
+  elapsedDays: number;
+  address: string;
+  loc: string;
+  rawRecord: ImmRecord;
+  orderIndex: number;
+}
+
+// Canonical function that creates the exact active still-in residents dataset
+export const getCRTActiveStillInRecords = (
+  records: ImmRecord[],
+  movementMap?: Record<string, MovementData>,
+  selectedDateStr?: string
+): CRTActiveRecordItem[] => {
+  const todayStr = new Date().toLocaleDateString('en-CA');
+  const targetDateStr = selectedDateStr || todayStr;
+  const isCurrentRealtime = !selectedDateStr || selectedDateStr === todayStr;
+
+  // Calculate end-of-day boundary for the selected date (in milliseconds)
+  const refEndOfDayMs = (() => {
+    if (isCurrentRealtime) return Date.now();
+    const parts = targetDateStr.split(/[-\/]/);
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        // YYYY-MM-DD
+        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 23, 59, 59, 999).getTime();
+      } else if (parts[2].length === 4) {
+        // DD-MM-YYYY
+        return new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10), 23, 59, 59, 999).getTime();
+      }
+    }
+    const t = new Date(targetDateStr).setHours(23, 59, 59, 999);
+    return isNaN(t) ? Date.now() : t;
+  })();
+
+  // 1. Gather all movement logs up to the end of the selected date
+  const historyRecords = (records || [])
+    .filter(r => r && r.logType !== 'FCR' && r.passport && typeof r.passport === 'string')
+    .map(r => {
+      const t = parseTimestamp(r.timestamp) || 
+                parseTimestamp((r as any).flightDate) || 
+                parseTimestamp((r as any).date) || 
+                parseTimestamp((r as any).formC?.date) || 
+                (typeof r.id === 'number' && r.id > 1000000000000 ? r.id : 0);
+      return { record: r, timeMs: t };
+    })
+    .filter(item => item.timeMs > 0 && item.timeMs <= refEndOfDayMs)
+    .sort((a, b) => {
+      const diff = a.timeMs - b.timeMs;
+      if (diff !== 0) return diff;
+      const aMode = a.record.mode || (a.record as any).direction;
+      const bMode = b.record.mode || (b.record as any).direction;
+      if (aMode === 'IN' && bMode === 'OUT') return -1;
+      if (aMode === 'OUT' && bMode === 'IN') return 1;
+      return (a.record.id || 0) - (b.record.id || 0);
+    });
+
+  // 2. Replay chronological check-in / check-out history for every passport as of refEndOfDayMs
+  const passportStateMap = new Map<string, {
+    latestInRecord: ImmRecord;
+    inTimeMs: number;
+    isStillIn: boolean;
+  }>();
+
+  historyRecords.forEach(({ record: r, timeMs }) => {
+    const pp = r.passport.toUpperCase().trim();
+    if (!pp) return;
+
+    const isEntry = r.mode === 'IN' || (r as any).direction === 'IN' || (r as any).type === 'Arrival';
+    const isExit = r.mode === 'OUT' || (r as any).direction === 'OUT' || (r as any).type === 'Departure';
+
+    if (isEntry) {
+      passportStateMap.set(pp, {
+        latestInRecord: r,
+        inTimeMs: timeMs,
+        isStillIn: true
+      });
+    } else if (isExit) {
+      const existing = passportStateMap.get(pp);
+      if (existing) {
+        existing.isStillIn = false;
+      } else {
+        passportStateMap.set(pp, {
+          latestInRecord: r,
+          inTimeMs: timeMs,
+          isStillIn: false
+        });
+      }
+    }
+  });
+
+  // 3. For current realtime (today), also ensure any live still-in from movementMap without checkout is included
+  if (isCurrentRealtime && movementMap) {
+    Object.entries(movementMap).forEach(([ppKey, movVal]) => {
+      const mov = movVal as MovementData;
+      const pp = ppKey.toUpperCase().trim();
+      if (!pp || mov.out) return;
+      const state = passportStateMap.get(pp);
+      if (!state || !state.isStillIn) {
+        const fallbackRec: ImmRecord = {
+          id: mov.lastId || Date.now(),
+          passport: pp,
+          fullname: mov.n || '',
+          nationality: mov.nat || '',
+          address: mov.loc || '',
+          visaType: mov.visa || '',
+          visaNumber: mov.visaNumber || '',
+          dob: mov.dob || '',
+          gender: (mov.gender || 'M') as any,
+          stayFrom: mov.start || '',
+          stayTo: mov.end || '',
+          totalDays: mov.allowed || '',
+          vehicleInfo: mov.vInfo || '',
+          broughtBy: mov.agent || '',
+          contactDetails: mov.contact || '',
+          officialName: mov.offName || '',
+          officialTitle: mov.offTitle || '',
+          arrivedFrom: '',
+          departedTo: '',
+          mode: 'IN',
+          timestamp: mov.in || ''
+        };
+        passportStateMap.set(pp, {
+          latestInRecord: state?.latestInRecord || fallbackRec,
+          inTimeMs: mov.inTime || parseTimestamp(mov.in) || Date.now(),
+          isStillIn: true
+        });
+      }
+    });
+  }
+
+  // 4. Extract foreigners who were actually residing in hotel on the selected date
+  const stillInPassports: string[] = [];
+  passportStateMap.forEach((state, pp) => {
+    if (state.isStillIn && state.latestInRecord) {
+      stillInPassports.push(pp);
+    }
+  });
+
+  return stillInPassports.map((pp, idx) => {
+    const state = passportStateMap.get(pp)!;
+    const r = state.latestInRecord;
+    const mov = movementMap?.[pp];
+
+    const arrDate = r.timestamp || (mov?.in ? mov.in : '');
+    const inTime = state.inTimeMs || (mov?.inTime ? mov.inTime : parseTimestamp(arrDate));
+    const elapsed = calculateElapsedDays(inTime || arrDate, targetDateStr);
+
+    const addr = r.address || mov?.loc || '-';
+    const nat = r.nationality || mov?.nat || '-';
+    const vType = r.visaType || mov?.visa || '-';
+    const name = r.fullname || mov?.n || '-';
+    const gen = (r.gender === 'M' || r.gender === 'F') ? r.gender : (mov?.gender === 'M' || mov?.gender === 'F' ? mov.gender : '');
+
+    return {
+      id: `${pp}-${r.id || idx}`,
+      passport: pp,
+      p: pp,
+      nationality: nat,
+      nat: nat,
+      fullname: name,
+      n: name,
+      gender: gen as ('M' | 'F' | ''),
+      visaType: vType,
+      visa: vType,
+      visaNumber: r.visaNumber || mov?.visaNumber || '',
+      dob: r.dob || mov?.dob || '',
+      stayFrom: r.stayFrom || mov?.start || '',
+      start: r.stayFrom || mov?.start || '',
+      stayTo: r.stayTo || mov?.end || '',
+      end: r.stayTo || mov?.end || '',
+      lastArrivalDate: arrDate,
+      in: arrDate,
+      arrivalTimestampMs: inTime,
+      inTime: inTime,
+      elapsedDays: elapsed,
+      address: addr,
+      loc: addr,
+      rawRecord: r,
+      orderIndex: idx
+    };
+  });
+};
+
 export const CustomReportTable: React.FC<CustomReportTableProps> = ({
   records,
   movementMap,
@@ -254,227 +517,31 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
     return toBurmeseDigits(formatted);
   };
 
-  // Parse any date/timestamp into milliseconds safely
-  const parseDateToMs = (dateStr?: string | number): number => {
-    if (!dateStr) return 0;
-    if (typeof dateStr === 'number') return dateStr;
-    const str = String(dateStr).trim();
-    if (/^\d+$/.test(str)) return parseInt(str, 10);
-    const parsed = Date.parse(str);
-    if (!isNaN(parsed)) return parsed;
-    // Format DD-MM-YYYY or DD/MM/YYYY
-    const parts = str.split(/[-\/]/);
-    if (parts.length === 3) {
-      if (parts[0].length === 4) {
-        return new Date(`${parts[0]}-${parts[1]}-${parts[2]}`).getTime() || 0;
-      }
-      return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).getTime() || 0;
-    }
-    return 0;
-  };
-
-  // Helper to accurately calculate stay days since latest arrival date (1-indexed stay duration)
-  const calculateElapsedDays = (inTimeOrDate: string | number | undefined, refDateStr: string): number => {
-    if (!inTimeOrDate) return 0;
-    let arrMs = typeof inTimeOrDate === 'number' ? inTimeOrDate : 0;
-    if (!arrMs && typeof inTimeOrDate === 'string') {
-      arrMs = parseTimestamp(inTimeOrDate) || parseDateToMs(inTimeOrDate);
-    }
-    if (!arrMs) return 0;
-
-    const arrDate = new Date(arrMs);
-    if (isNaN(arrDate.getTime())) return 0;
-    const arrZero = new Date(arrDate.getFullYear(), arrDate.getMonth(), arrDate.getDate()).getTime();
-
-    let refDate: Date;
-    if (refDateStr) {
-      const parts = refDateStr.split(/[-\/]/);
-      if (parts.length === 3) {
-        if (parts[0].length === 4) {
-          // YYYY-MM-DD
-          refDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
-        } else if (parts[2].length === 4) {
-          // DD-MM-YYYY
-          refDate = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
-        } else {
-          refDate = new Date(refDateStr);
-        }
-      } else {
-        refDate = new Date(refDateStr);
-      }
-    } else {
-      refDate = new Date();
-    }
-    if (isNaN(refDate.getTime())) refDate = new Date();
-    const refZero = new Date(refDate.getFullYear(), refDate.getMonth(), refDate.getDate()).getTime();
-
-    const diffDays = Math.round((refZero - arrZero) / (1000 * 60 * 60 * 24));
-    if (diffDays < 0) return 1;
-    return diffDays + 1; // 1-indexed stay days: arrived today = 1 day, yesterday = 2 days
-  };
-
   // Base Data Extraction matching exact Still In Movement Log logic & reference date
   const basePoolRows: CustomReportRow[] = useMemo(() => {
     const selectedDateStr = selectedDate || today;
-    const isCurrentRealtime = !selectedDate || selectedDate === today;
-
-    // Calculate end-of-day boundary for the selected date (in milliseconds)
-    const refEndOfDayMs = (() => {
-      if (isCurrentRealtime) return Date.now();
-      const parts = selectedDateStr.split(/[-\/]/);
-      if (parts.length === 3) {
-        if (parts[0].length === 4) {
-          // YYYY-MM-DD
-          return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 23, 59, 59, 999).getTime();
-        } else if (parts[2].length === 4) {
-          // DD-MM-YYYY
-          return new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10), 23, 59, 59, 999).getTime();
-        }
-      }
-      const t = new Date(selectedDateStr).setHours(23, 59, 59, 999);
-      return isNaN(t) ? Date.now() : t;
-    })();
 
     if (dataPool === 'STILL_IN') {
-      // 1. Gather all movement logs up to the end of the selected date
-      const historyRecords = (records || [])
-        .filter(r => r && r.logType !== 'FCR' && r.passport && typeof r.passport === 'string')
-        .map(r => {
-          const t = parseTimestamp(r.timestamp) || 
-                    parseTimestamp((r as any).flightDate) || 
-                    parseTimestamp((r as any).date) || 
-                    parseTimestamp((r as any).formC?.date) || 
-                    (typeof r.id === 'number' && r.id > 1000000000000 ? r.id : 0);
-          return { record: r, timeMs: t };
-        })
-        .filter(item => item.timeMs > 0 && item.timeMs <= refEndOfDayMs)
-        .sort((a, b) => {
-          const diff = a.timeMs - b.timeMs;
-          if (diff !== 0) return diff;
-          const aMode = a.record.mode || (a.record as any).direction;
-          const bMode = b.record.mode || (b.record as any).direction;
-          if (aMode === 'IN' && bMode === 'OUT') return -1;
-          if (aMode === 'OUT' && bMode === 'IN') return 1;
-          return (a.record.id || 0) - (b.record.id || 0);
-        });
-
-      // 2. Replay chronological check-in / check-out history for every passport as of refEndOfDayMs
-      const passportStateMap = new Map<string, {
-        latestInRecord: ImmRecord;
-        inTimeMs: number;
-        isStillIn: boolean;
-      }>();
-
-      historyRecords.forEach(({ record: r, timeMs }) => {
-        const pp = r.passport.toUpperCase().trim();
-        if (!pp) return;
-
-        const isEntry = r.mode === 'IN' || (r as any).direction === 'IN' || (r as any).type === 'Arrival';
-        const isExit = r.mode === 'OUT' || (r as any).direction === 'OUT' || (r as any).type === 'Departure';
-
-        if (isEntry) {
-          passportStateMap.set(pp, {
-            latestInRecord: r,
-            inTimeMs: timeMs,
-            isStillIn: true
-          });
-        } else if (isExit) {
-          const existing = passportStateMap.get(pp);
-          if (existing) {
-            existing.isStillIn = false;
-          } else {
-            passportStateMap.set(pp, {
-              latestInRecord: r,
-              inTimeMs: timeMs,
-              isStillIn: false
-            });
-          }
-        }
-      });
-
-      // 3. For current realtime (today), also ensure any live still-in from movementMap without checkout is included
-      if (isCurrentRealtime && movementMap) {
-        Object.entries(movementMap).forEach(([ppKey, movVal]) => {
-          const mov = movVal as MovementData;
-          const pp = ppKey.toUpperCase().trim();
-          if (!pp || mov.out) return;
-          const state = passportStateMap.get(pp);
-          if (!state || !state.isStillIn) {
-            const fallbackRec: ImmRecord = {
-              id: mov.lastId || Date.now(),
-              passport: pp,
-              fullname: mov.n || '',
-              nationality: mov.nat || '',
-              address: mov.loc || '',
-              visaType: mov.visa || '',
-              visaNumber: mov.visaNumber || '',
-              dob: mov.dob || '',
-              gender: (mov.gender || 'M') as any,
-              stayFrom: mov.start || '',
-              stayTo: mov.end || '',
-              totalDays: mov.allowed || '',
-              vehicleInfo: mov.vInfo || '',
-              broughtBy: mov.agent || '',
-              contactDetails: mov.contact || '',
-              officialName: mov.offName || '',
-              officialTitle: mov.offTitle || '',
-              arrivedFrom: '',
-              departedTo: '',
-              mode: 'IN',
-              timestamp: mov.in || ''
-            };
-            passportStateMap.set(pp, {
-              latestInRecord: state?.latestInRecord || fallbackRec,
-              inTimeMs: mov.inTime || parseTimestamp(mov.in) || Date.now(),
-              isStillIn: true
-            });
-          }
-        });
-      }
-
-      // 4. Extract foreigners who were actually residing in hotel on the selected date
-      const stillInPassports: string[] = [];
-      passportStateMap.forEach((state, pp) => {
-        if (state.isStillIn && state.latestInRecord) {
-          stillInPassports.push(pp);
-        }
-      });
-
-      return stillInPassports.map((pp, idx) => {
-        const state = passportStateMap.get(pp)!;
-        const r = state.latestInRecord;
-        const mov = movementMap?.[pp];
-
-        const arrDate = r.timestamp || (mov?.in ? mov.in : '');
-        const inTime = state.inTimeMs || (mov?.inTime ? mov.inTime : parseTimestamp(arrDate));
-        const elapsed = calculateElapsedDays(inTime || arrDate, selectedDateStr);
-
-        const addr = r.address || mov?.loc || '-';
-        const nat = r.nationality || mov?.nat || '-';
-        const vType = r.visaType || mov?.visa || '-';
-        const name = r.fullname || mov?.n || '-';
-        const gen = (r.gender === 'M' || r.gender === 'F') ? r.gender : (mov?.gender === 'M' || mov?.gender === 'F' ? mov.gender : '');
-
-        return {
-          id: `${pp}-${r.id || idx}`,
-          passport: pp,
-          nationality: nat,
-          fullname: name,
-          gender: gen,
-          visaType: vType,
-          visaNumber: r.visaNumber || mov?.visaNumber || '',
-          dob: r.dob || mov?.dob || '',
-          stayFrom: r.stayFrom || mov?.start || '',
-          stayTo: r.stayTo || mov?.end || '',
-          lastArrivalDate: arrDate ? (useBurmeseDigits ? toBurmeseSlashDate(arrDate) : formatToDDMMYYYY(arrDate)) : '-',
-          arrivalTimestampMs: inTime,
-          elapsedDays: elapsed,
-          address: addr,
-          remarks: customRemarks[pp] || '',
-          selected: selectedPassports[pp] !== false,
-          orderIndex: idx
-        };
-      });
+      const activeList = getCRTActiveStillInRecords(records, movementMap, selectedDateStr);
+      return activeList.map((item, idx) => ({
+        id: item.id,
+        passport: item.passport,
+        nationality: item.nationality,
+        fullname: item.fullname,
+        gender: item.gender,
+        visaType: item.visaType,
+        visaNumber: item.visaNumber,
+        dob: item.dob,
+        stayFrom: item.stayFrom,
+        stayTo: item.stayTo,
+        lastArrivalDate: item.lastArrivalDate ? (useBurmeseDigits ? toBurmeseSlashDate(item.lastArrivalDate) : formatToDDMMYYYY(item.lastArrivalDate)) : '-',
+        arrivalTimestampMs: item.arrivalTimestampMs,
+        elapsedDays: item.elapsedDays,
+        address: item.address,
+        remarks: customRemarks[item.passport] || '',
+        selected: selectedPassports[item.passport] !== false,
+        orderIndex: idx
+      }));
     }
 
     // ALL_MOVEMENTS / INBOUND / OUTBOUND
@@ -1359,14 +1426,14 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
         <option value="ဒုတိယညွှန်ကြားရေးမှူး" />
         <option value="ညွှန်ကြားရေးမှူး" />
         <option value="တာဝန်ခံအရာရှိ" />
-        {masterData.filter(m => m.type === 'Title' && m.name).map(m => (
-          <option key={`title-${m.id}`} value={m.name} />
+        {masterData.filter(m => m.type === 'Title' && m.name).map((m, mIdx) => (
+          <option key={`title-${m.id}-${mIdx}`} value={m.name} />
         ))}
       </datalist>
       <datalist id="crtOfficialNamesList">
         {currentUser?.name && <option value={currentUser.name} />}
-        {masterData.filter(m => m.type === 'Official' && m.name).map(m => (
-          <option key={`off-${m.id}`} value={m.name} />
+        {masterData.filter(m => m.type === 'Official' && m.name).map((m, mIdx) => (
+          <option key={`off-${m.id}-${mIdx}`} value={m.name} />
         ))}
       </datalist>
 
@@ -1668,7 +1735,7 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
               ) : (
                 sortedRows.map((r, idx) => (
                   <div 
-                    key={r.id} 
+                    key={r.id ? `${r.id}-${idx}` : `${r.passport || 'crt-row'}-${idx}`} 
                     className={`p-2 flex items-center justify-between text-xs transition-colors ${
                       r.selected ? 'bg-indigo-50/30' : 'bg-slate-50/50 opacity-60'
                     }`}
@@ -1810,8 +1877,8 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                     {/* Data Table with Repeating Header on Every Page */}
                     <table className="w-full text-center text-[11px] border-collapse border border-black font-pyidaungsu table-fixed">
                       <colgroup>
-                        {CRT_COLUMNS_DEFINITION.filter(col => visibleColumns.includes(col.id)).map(col => (
-                          <col key={col.id} className={col.defaultColWidth} />
+                        {CRT_COLUMNS_DEFINITION.filter(col => visibleColumns.includes(col.id)).map((col, cIdx) => (
+                          <col key={col.id ? `${col.id}-${cIdx}` : `col-${cIdx}`} className={col.defaultColWidth} />
                         ))}
                       </colgroup>
                       <thead>
@@ -1911,7 +1978,7 @@ export const CustomReportTable: React.FC<CustomReportTableProps> = ({
                           pageRows.map((m, rowInPageIdx) => {
                             const overallIdx = pageIdx * ROWS_PER_PAGE + rowInPageIdx;
                             return (
-                              <tr key={m.id} className="border-b border-black font-normal">
+                              <tr key={m.id ? `${m.id}-${overallIdx}` : `${m.passport || 'crt-row'}-${overallIdx}`} className="border-b border-black font-normal">
                                 {visibleColumns.includes('sr') && (
                                   <td className="p-1.5 border border-black text-center font-normal">
                                     {useBurmeseDigits ? toBurmeseDigits(overallIdx + 1) : overallIdx + 1}

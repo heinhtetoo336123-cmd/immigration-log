@@ -441,7 +441,7 @@ export const ActivityLogView: React.FC<ActivityLogViewProps> = ({
                 filteredLogs.map((log, idx) => {
                   const isExpanded = expandedLogId === log.id;
                   return (
-                    <React.Fragment key={log.id}>
+                    <React.Fragment key={log.id ? `${log.id}-${idx}` : `log-${idx}`}>
                       <tr 
                         className={`hover:bg-slate-50/80 transition-colors ${
                           log.action === 'DELETE' ? 'bg-rose-50/30' : ''

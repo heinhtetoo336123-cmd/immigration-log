@@ -1950,11 +1950,11 @@ export const IndividualSearch = ({
                 No matching stayed people or addresses found
               </div>
             ) : (
-              filteredPeople.map((person) => {
+              filteredPeople.map((person, idx) => {
                 const statusInfo = getGuestStayStatus(person.passport, computedMovementMap);
                 return (
                   <div
-                    key={person.passport}
+                    key={person.passport ? `${person.passport}-${idx}` : `p-${idx}`}
                     onClick={() => addPassportToGroup(person.passport)}
                     className="p-3.5 flex justify-between items-center hover:bg-indigo-50/50 cursor-pointer transition-colors border-b last:border-0"
                   >
@@ -2125,7 +2125,7 @@ export const IndividualSearch = ({
                       const rem = getRemainingDaysNum(m.end);
                       const elapsed = getDaysStayedSoFar(m.start);
                       return (
-                        <div key={m.p} className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/80 space-y-3 text-xs">
+                        <div key={m.p ? `${m.p}-${idx}` : `m-${idx}`} className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/80 space-y-3 text-xs">
                           <div className="flex justify-between items-start">
                             <div>
                               <span className="text-[9px] font-bold text-slate-400 font-mono">#{idx + 1}</span>
@@ -2207,7 +2207,7 @@ export const IndividualSearch = ({
                           const rem = getRemainingDaysNum(m.end);
                           const elapsed = getDaysStayedSoFar(m.start);
                           return (
-                            <tr key={m.p} className="hover:bg-slate-50/50 transition-colors">
+                            <tr key={m.p ? `${m.p}-${idx}` : `m-${idx}`} className="hover:bg-slate-50/50 transition-colors">
                               <td className="p-3.5 text-center font-mono font-bold text-slate-400">{idx + 1}</td>
                               <td className="p-3.5">
                                 <div className="font-black text-indigo-950 font-mono tracking-tight">{m.p}</div>
@@ -2287,11 +2287,11 @@ export const IndividualSearch = ({
             <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
               <span className="text-[10px] sm:text-xs font-black uppercase tracking-widest text-indigo-400">Current Investigation Group ({selectedPassports.length}):</span>
               <div className="flex flex-wrap gap-1.5 sm:gap-2">
-                {selectedPassports.map(pp => {
+                {selectedPassports.map((pp, idx) => {
                   const guestInfo = computedMovementMap[pp] || { n: pp };
                   const statusInfo = getGuestStayStatus(pp, computedMovementMap);
                   return (
-                    <div key={pp} className="bg-slate-800 text-slate-100 pl-2.5 sm:pl-3 pr-1.5 sm:pr-2 py-1 sm:py-1.5 rounded-xl border border-slate-700/60 flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs font-bold font-mono">
+                    <div key={`${pp}-${idx}`} className="bg-slate-800 text-slate-100 pl-2.5 sm:pl-3 pr-1.5 sm:pr-2 py-1 sm:py-1.5 rounded-xl border border-slate-700/60 flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs font-bold font-mono">
                       <span>{pp} ({guestInfo.n})</span>
                       {statusInfo.isStillIn ? (
                         <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded-md bg-emerald-600 text-white flex items-center gap-1">
@@ -2384,7 +2384,7 @@ export const IndividualSearch = ({
                 const rem = getRemainingDaysNum(m.end);
                 const statusInfo = getGuestStayStatus(pp, computedMovementMap);
                 return (
-                  <div key={pp} className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/80 space-y-2.5 text-xs">
+                  <div key={`${pp}-${index}`} className="p-4 bg-slate-50/80 rounded-2xl border border-slate-200/80 space-y-2.5 text-xs">
                     <div className="flex justify-between items-start">
                       <div>
                         <span className="text-[9px] font-bold text-slate-400 font-mono">#{index + 1}</span>
@@ -2483,7 +2483,7 @@ export const IndividualSearch = ({
                     const rem = getRemainingDaysNum(m.end);
                     const statusInfo = getGuestStayStatus(pp, computedMovementMap);
                     return (
-                      <tr key={pp} className="hover:bg-slate-50/50 transition-colors">
+                      <tr key={`${pp}-${index}`} className="hover:bg-slate-50/50 transition-colors">
                         <td className="p-3.5 text-center font-mono text-slate-400">{index + 1}</td>
                         <td className="p-3.5 font-black text-indigo-900 font-mono tracking-tight">{pp}</td>
                         <td className="p-3.5 uppercase text-slate-800 text-[11px]">{m.n}</td>
@@ -2553,7 +2553,7 @@ export const IndividualSearch = ({
           <div className="space-y-6 sm:space-y-8 no-print">
             <h3 className="text-xs sm:text-md font-black text-slate-500 uppercase tracking-wider block">Individual Detailed Investigation Cards</h3>
             
-            {selectedPassports.map((pp) => {
+            {selectedPassports.map((pp, ppIdx) => {
               const matchedLog = computedMovementMap[pp];
               if (!matchedLog) return null;
 
@@ -2568,7 +2568,7 @@ export const IndividualSearch = ({
               const latestCheck = personCheckingHistory[0] || null;
 
               return (
-                <div key={pp} className="card shadow-lg bg-white border border-slate-100 rounded-2xl sm:rounded-3xl overflow-hidden">
+                <div key={`${pp}-${ppIdx}`} className="card shadow-lg bg-white border border-slate-100 rounded-2xl sm:rounded-3xl overflow-hidden">
                   
                   {/* Card Header Bar */}
                   <div className="bg-indigo-950 p-4 sm:p-5 text-white flex justify-between items-start sm:items-center flex-col sm:flex-row gap-3 sm:gap-4">
@@ -2864,8 +2864,8 @@ export const IndividualSearch = ({
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-50 bg-white text-slate-700 font-bold">
-                                {personLogs.map((log) => (
-                                  <tr key={log.id} className="hover:bg-slate-50/30 transition-colors">
+                                {personLogs.map((log, idx) => (
+                                  <tr key={log.id ? `${log.id}-${idx}` : `log-${idx}`} className="hover:bg-slate-50/30 transition-colors">
                                     <td className="p-2 pl-4 text-slate-900 font-semibold">{log.timestamp}</td>
                                     <td className="p-2 text-center">
                                       <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${
@@ -3166,7 +3166,7 @@ export const IndividualSearch = ({
                           const rem = getRemainingDaysNum(m.end);
                           const statusInfo = getGuestStayStatus(pp, computedMovementMap);
                           return (
-                            <tr key={pp} className="align-top border-b border-gray-300">
+                            <tr key={pp ? `${pp}-${idx}` : `pp-${idx}`} className="align-top border-b border-gray-300">
                               <td className="p-1.5 border border-gray-400 text-center font-bold">{idx + 1}</td>
                               <td className="p-1.5 border border-gray-400">
                                 <div className="font-extrabold font-mono uppercase text-indigo-900 leading-none">{pp}</div>
@@ -3221,7 +3221,7 @@ export const IndividualSearch = ({
                     const personCheckingHistory: any[] = [];
 
                     return (
-                      <div key={pp} className={`space-y-6 ${idx > 0 ? 'print-page-break pt-6 border-t border-dashed border-gray-300' : ''}`}>
+                      <div key={pp ? `${pp}-${idx}` : `profile-${idx}`} className={`space-y-6 ${idx > 0 ? 'print-page-break pt-6 border-t border-dashed border-gray-300' : ''}`}>
                         
                         {/* Profile Header Tag */}
                         <div className="bg-slate-100 p-2 border-b-2 border-slate-900 flex justify-between items-center">
@@ -3299,7 +3299,7 @@ export const IndividualSearch = ({
                             </thead>
                             <tbody>
                               {personLogs.map((log, idx) => (
-                                <tr key={log.id} className="border-b border-gray-300">
+                                <tr key={log.id ? `${log.id}-${idx}` : `log-${idx}`} className="border-b border-gray-300">
                                   <td className="p-1 border border-gray-400 text-center font-bold">{idx + 1}</td>
                                   <td className="p-1 border border-gray-400 font-mono text-[8px]">{log.timestamp}</td>
                                   <td className="p-1 border border-gray-400 text-center">
@@ -3451,7 +3451,7 @@ export const IndividualSearch = ({
                   const m = computedMovementMap[pp] || {};
                   const rem = getRemainingDaysNum(m.end);
                   return (
-                    <tr key={pp} className="align-top border-b border-gray-300">
+                    <tr key={pp ? `${pp}-${idx}` : `pp-${idx}`} className="align-top border-b border-gray-300">
                       <td className="p-1.5 border border-gray-400 text-center font-bold">{idx + 1}</td>
                       <td className="p-1.5 border border-gray-400">
                         <div className="font-extrabold font-mono uppercase text-indigo-900 leading-none">{pp}</div>
@@ -3490,7 +3490,7 @@ export const IndividualSearch = ({
             const personCheckingHistory: any[] = [];
 
             return (
-              <div key={pp} className={`space-y-6 ${idx > 0 ? 'print-page-break pt-6 border-t border-dashed border-gray-300' : ''}`}>
+              <div key={pp ? `${pp}-${idx}` : `profile-${idx}`} className={`space-y-6 ${idx > 0 ? 'print-page-break pt-6 border-t border-dashed border-gray-300' : ''}`}>
                 <div className="bg-slate-100 p-2 border-b-2 border-slate-900 flex justify-between items-center">
                   <strong className="text-xs uppercase tracking-tight text-indigo-950 font-black">
                     Dossier File #{idx + 1}: {bio.n} ({pp})
@@ -3563,7 +3563,7 @@ export const IndividualSearch = ({
                     </thead>
                     <tbody>
                       {personLogs.map((log, idx) => (
-                        <tr key={log.id} className="border-b border-gray-300">
+                        <tr key={log.id ? `${log.id}-${idx}` : `log-${idx}`} className="border-b border-gray-300">
                           <td className="p-1 border border-gray-400 text-center font-bold">{idx + 1}</td>
                           <td className="p-1 border border-gray-400 font-mono text-[8px]">{log.timestamp}</td>
                           <td className="p-1 border border-gray-400 text-center">
@@ -3718,7 +3718,7 @@ export const IndividualSearch = ({
                       const m = computedMovementMap[pp] || {};
                       const rem = getRemainingDaysNum(m.end);
                       return (
-                        <tr key={pp} className="align-top border-b border-gray-300">
+                        <tr key={pp ? `${pp}-${idx}` : `pp-${idx}`} className="align-top border-b border-gray-300">
                           <td className="p-1 border border-gray-400 text-center font-bold">{idx + 1}</td>
                           <td className="p-1 border border-gray-400">
                             <div className="font-extrabold font-mono uppercase text-indigo-900 leading-none">{pp}</div>
@@ -3796,7 +3796,7 @@ export const IndividualSearch = ({
           const pageNum = selectedPassports.length > 1 ? idx + 2 : idx + 1;
 
           return (
-            <div key={pp} className="pdf-page bg-white p-8 border border-slate-200" style={{ width: '800px', minHeight: '1130px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+            <div key={pp ? `${pp}-${idx}` : `page-${idx}`} className="pdf-page bg-white p-8 border border-slate-200" style={{ width: '800px', minHeight: '1130px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
               <div>
                 {/* Header for individual page */}
                 <div className="text-center space-y-1 mb-4 border-b pb-2">
@@ -3878,7 +3878,7 @@ export const IndividualSearch = ({
                     </thead>
                     <tbody>
                       {personLogs.slice(0, 4).map((log, lIdx) => (
-                        <tr key={log.id} className="border-b border-gray-300">
+                        <tr key={log.id ? `${log.id}-${lIdx}` : `log-${lIdx}`} className="border-b border-gray-300">
                           <td className="p-0.5 border border-gray-400 text-center font-bold">{lIdx + 1}</td>
                           <td className="p-0.5 border border-gray-400 font-mono text-[7px]">{log.timestamp}</td>
                           <td className="p-0.5 border border-gray-400 text-center font-black text-[7px]">

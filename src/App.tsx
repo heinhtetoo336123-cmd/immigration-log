@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, getDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps } from './lib/firebase';
 import { 
@@ -93,7 +93,7 @@ import { StayPeriodInput } from './components/StayPeriodInput';
 import { IndividualSearch } from './components/IndividualSearch';
 import { CloudSyncStatusModal } from './components/CloudSyncStatusModal';
 import { WatchList } from './components/WatchList';
-import { CustomReportTable } from './components/CustomReportTable';
+import { CustomReportTable, getCRTActiveStillInRecords, CRTActiveRecordItem } from './components/CustomReportTable';
 import { ActivityLogView } from './components/ActivityLogView';
 import { logActivity } from './utils/activityLogger';
 import { miniDB } from './db';
@@ -528,7 +528,7 @@ const DailyReport = ({
               }
 
               return (
-                <tr key={r.id}>
+                <tr key={r.id ? `${r.id}-${i}` : `${r.passport || 'record'}-${i}`}>
                   <td className="font-bold">{i+1}</td>
                   <td className="text-left font-bold">{r.fullname}</td>
                   <td>{r.gender}</td>
@@ -2428,8 +2428,8 @@ const MasterDB = ({
                  </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {masterData.filter(m => m.name.toLowerCase().includes(mSearch.toLowerCase())).map(m => (
-                  <tr key={m.id} className="hover:bg-slate-50 group transition-colors">
+                {masterData.filter(m => m.name.toLowerCase().includes(mSearch.toLowerCase())).map((m, mIdx) => (
+                  <tr key={m.id ? `${m.id}-${mIdx}` : `${m.name || 'master'}-${mIdx}`} className="hover:bg-slate-50 group transition-colors">
                     <td className="p-3 text-sm text-slate-800">
                       <div className="font-black text-slate-900">{m.name}</div>
                       {m.linkedValue && (
@@ -2599,9 +2599,9 @@ const MasterDB = ({
                     <div className="space-y-2">
                       <p className="font-bold text-slate-700 text-[11px]">Select Primary Target Name to Keep:</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {cluster.items.map(item => (
+                        {cluster.items.map((item, itemIdx) => (
                           <label
-                            key={item.id}
+                            key={item.id ? `${item.id}-${itemIdx}` : `item-${itemIdx}`}
                             className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${
                               item.id === currentTargetId
                                 ? 'bg-purple-50 border-purple-500 ring-2 ring-purple-500/20 font-black text-purple-900'
@@ -2826,7 +2826,8 @@ const TelegraphTables = ({
   movementMap = {},
   dossierHistory = [],
   masterData = [],
-  tempRecords = []
+  tempRecords = [],
+  crtActiveRecords
 }: {
   records: ImmRecord[];
   summaries: VehicleSummary[];
@@ -2837,6 +2838,7 @@ const TelegraphTables = ({
   dossierHistory?: DossierRecord[];
   masterData?: MasterItem[];
   tempRecords?: ImmRecord[];
+  crtActiveRecords?: CRTActiveRecordItem[];
 }) => {
 
   const isRecordOnDate = (r: ImmRecord, targetDateStr: string) => {
@@ -3441,7 +3443,9 @@ const TelegraphTables = ({
   };
 
   const isCoLtdAddress = (addressStr: string) => {
-    const clean = (addressStr || '').toUpperCase().trim();
+    if (!addressStr) return false;
+    if (/co\.|ltd|company|ကုမ္ပဏီ|မိုင်း|စက်ရုံ/i.test(addressStr)) return true;
+    const clean = addressStr.toUpperCase().trim();
     if (!clean) return false;
     if (masterData && masterData.length > 0) {
       const match = masterData.find(m => {
@@ -3474,8 +3478,11 @@ const TelegraphTables = ({
     );
   };
 
-  const getElapsedDays = (m: MovementData, targetDateStr: string) => {
-    const arrMs = m.inTime || parseTimestamp(m.in);
+  const getElapsedDays = (m: any, targetDateStr: string) => {
+    if (m && typeof m.elapsedDays === 'number' && m.elapsedDays > 0) {
+      return m.elapsedDays;
+    }
+    const arrMs = m.inTime || m.arrivalTimestampMs || parseTimestamp(m.in);
     if (!arrMs) return 0;
     let refMs = Date.now();
     if (targetDateStr) {
@@ -3513,102 +3520,31 @@ const TelegraphTables = ({
     }
   };
 
+  // DIRECT MAPPING: Map CRT's verified active records to Telegraph & Tables (Sections 4 & 5)
+  // Strictly eliminates discrepancies: excludes departed persons (e.g. P03577037) identically to CRT
   const stillInList = useMemo(() => {
-    const list: MovementData[] = [];
-    const seenPassports = new Set<string>();
-    const allRecs = [...(records || []), ...(tempRecords || [])];
-
-    // 1. Process movementMap entries
-    Object.entries(movementMap || {}).forEach(([pass, movVal]) => {
-      const mov = movVal as MovementData;
-      const pUpper = pass.trim().toUpperCase();
-      if (!pUpper || seenPassports.has(pUpper)) return;
-      const inTime = Number(mov.inTime || 0);
-      const outTime = Number(mov.outTime || 0);
-      const hasDeparted = Boolean(mov.out || mov.isStillIn === false || (outTime > 0 && inTime > 0 && outTime >= inTime));
-      if (hasDeparted || !mov.in) return;
-
-      // check if latest record in allRecs is OUT
-      const matchRecords = allRecs
-        .filter(r => (r.passport || '').trim().toUpperCase() === pUpper)
-        .sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp) || (b.id || 0) - (a.id || 0));
-      const latestRec = matchRecords[0];
-      if (latestRec && latestRec.mode === 'OUT') return;
-
-      seenPassports.add(pUpper);
-      list.push({
-        ...mov,
-        loc: latestRec?.address || mov.loc || '',
-        n: latestRec?.fullname || mov.n || '',
-        nat: latestRec?.nationality || mov.nat || '',
-        visa: latestRec?.visaType || mov.visa || '',
-        gender: (latestRec?.gender || mov.gender || 'M') as 'M' | 'F'
-      });
-    });
-
-    // 2. Fallback for any foreigners in allRecs not captured in movementMap
-    const passportMap = new Map<string, ImmRecord[]>();
-    allRecs.forEach(r => {
-      if (!r || !r.passport || r.logType === 'FCR') return;
-      const pUpper = r.passport.trim().toUpperCase();
-      if (seenPassports.has(pUpper)) return;
-      if (!passportMap.has(pUpper)) passportMap.set(pUpper, []);
-      passportMap.get(pUpper)!.push(r);
-    });
-
-    passportMap.forEach((pRecs, pUpper) => {
-      pRecs.sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp) || (b.id || 0) - (a.id || 0));
-      const latest = pRecs[0];
-      if (latest && latest.mode === 'IN') {
-        seenPassports.add(pUpper);
-        list.push({
-          p: pUpper,
-          n: latest.fullname || '',
-          nat: latest.nationality || '',
-          loc: latest.address || '',
-          visa: latest.visaType || '',
-          visaNumber: latest.visaNumber || '',
-          dob: latest.dob || '',
-          gender: (latest.gender || 'M') as 'M' | 'F',
-          start: latest.stayFrom || '',
-          end: latest.stayTo || '',
-          allowed: latest.totalDays || '',
-          vInfo: latest.vehicleInfo || '',
-          agent: latest.broughtBy || '',
-          contact: latest.contactDetails || '',
-          offName: latest.officialName || '',
-          offTitle: latest.officialTitle || '',
-          repName: '',
-          repPhone: '',
-          in: latest.timestamp,
-          out: '',
-          inTime: parseTimestamp(latest.timestamp),
-          outTime: 0,
-          latestTime: parseTimestamp(latest.timestamp),
-          lastId: latest.id
-        });
-      }
-    });
-
-    return list;
-  }, [movementMap, records, tempRecords]);
+    if (selectedDate) {
+      return getCRTActiveStillInRecords(records, movementMap, selectedDate);
+    }
+    return crtActiveRecords || getCRTActiveStillInRecords(records, movementMap);
+  }, [records, movementMap, selectedDate, crtActiveRecords]);
 
   const companyResidentsList = useMemo(() => {
     return stillInList
-      .filter(m => isCoLtdAddress(m.loc))
+      .filter(m => isCoLtdAddress(m.loc || (m as any).address))
       .sort((a, b) => getElapsedDays(b, selectedDate) - getElapsedDays(a, selectedDate));
   }, [stillInList, selectedDate]);
 
   const otherResidentsList = useMemo(() => {
     return stillInList
-      .filter(m => !isCoLtdAddress(m.loc))
+      .filter(m => !isCoLtdAddress(m.loc || (m as any).address))
       .sort((a, b) => getElapsedDays(b, selectedDate) - getElapsedDays(a, selectedDate));
   }, [stillInList, selectedDate]);
 
   const addressSummaryList = useMemo(() => {
     const map: Record<string, { address: string; male: number; female: number; total: number; isCo: boolean }> = {};
     stillInList.forEach(m => {
-      const addr = (m.loc || '').trim() || 'အခြား/လိပ်စာမဖော်ပြထားသူများ';
+      const addr = (m.loc || (m as any).address || '').trim() || 'အခြား/လိပ်စာမဖော်ပြထားသူများ';
       if (!map[addr]) {
         map[addr] = {
           address: addr,
@@ -4276,7 +4212,7 @@ const TelegraphTables = ({
                 const foreignerOutTotal = row.foreignerOutM + row.foreignerOutF;
 
                 return (
-                  <tr key={row.id}>
+                  <tr key={row.id ? `${row.id}-${idx}` : `telegraph-row-${idx}`}>
                     <td className="p-1.5 text-center font-bold" style={{ border: '1px solid #000000' }}>{formatNum(idx + 1)}</td>
                     <td className="p-1.5 font-extrabold text-left uppercase w-[110px] min-w-[110px] max-w-[110px] break-words whitespace-normal text-wrap leading-tight text-[12px]" style={{ border: '1px solid #000000' }}>{row.flightName}</td>
                     <td className="p-1.5 text-center font-mono" style={{ border: '1px solid #000000' }}>{formatNum(row.time)}</td>
@@ -4469,7 +4405,7 @@ const TelegraphTables = ({
                   </tr>
                 ) : (
                   foreignerInRecords.map((r, idx) => (
-                    <tr key={r.id} className="border-b border-black">
+                    <tr key={r.id ? `${r.id}-${idx}` : `${r.passport || 'record'}-${idx}`} className="border-b border-black">
                       <td className="p-1 border border-black text-center font-bold">
                         {useBurmeseDigits ? toBurmeseDigits(idx + 1) : idx + 1}
                       </td>
@@ -4608,7 +4544,7 @@ const TelegraphTables = ({
                     const stayedFrom = lastIn ? lastIn.timestamp.split(', ')[0] : '-';
 
                     return (
-                      <tr key={r.id} className="border-b border-black">
+                      <tr key={r.id ? `${r.id}-${idx}` : `${r.passport || 'record'}-${idx}`} className="border-b border-black">
                         <td className="p-1 border border-black text-center font-bold">
                           {useBurmeseDigits ? toBurmeseDigits(idx + 1) : idx + 1}
                         </td>
@@ -4733,7 +4669,7 @@ const TelegraphTables = ({
                     const elapsed = getElapsedDays(m, selectedDate);
                     const remark = getLatestVerificationRemark(m.p, dossierHistory, records);
                     return (
-                      <tr key={m.p} className="border-b border-black">
+                      <tr key={(m as any).id ? `${(m as any).id}-${idx}` : `${(m as any).passportNumber || m.p || 'company-record'}-${idx}`} className="border-b border-black">
                         <td className="p-1.5 border border-black text-center font-bold">
                           {useBurmeseDigits ? toBurmeseDigits(idx + 1) : idx + 1}
                         </td>
@@ -4859,7 +4795,7 @@ const TelegraphTables = ({
                     const elapsed = getElapsedDays(m, selectedDate);
                     const remark = getLatestVerificationRemark(m.p, dossierHistory, records);
                     return (
-                      <tr key={m.p} className="border-b border-black">
+                      <tr key={(m as any).id ? `${(m as any).id}-${idx}` : `${(m as any).passportNumber || m.p || 'other-record'}-${idx}`} className="border-b border-black">
                         <td className="p-1.5 border border-black text-center font-bold">
                           {useBurmeseDigits ? toBurmeseDigits(idx + 1) : idx + 1}
                         </td>
@@ -4971,7 +4907,7 @@ const TelegraphTables = ({
                 ) : (
                   <>
                     {addressSummaryList.map((item, idx) => (
-                      <tr key={item.address} className="border-b border-black">
+                      <tr key={(item as any).id ? `${(item as any).id}-${idx}` : `${item.address || 'addr'}-${idx}`} className="border-b border-black">
                         <td className="p-2 border border-black text-center font-bold">
                           {useBurmeseDigits ? toBurmeseDigits(idx + 1) : idx + 1}
                         </td>
@@ -5323,7 +5259,7 @@ const TableOutput = ({
               })
               .map(r => r.vehicleInfo)
               .filter(Boolean)
-          )).map(v => <option key={v} value={v} />)}
+          )).map((v, vIdx) => <option key={`${v}-${vIdx}`} value={v} />)}
         </datalist>
         <div className="flex flex-col md:flex-row justify-between items-center gap-6 mb-8 border-b pb-6">
           <div className="flex items-center gap-4">
@@ -5482,7 +5418,7 @@ const TableOutput = ({
                 const cOutF = Math.max(0, cOutT - cOutM);
 
                 return (
-                  <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                  <tr key={s.id ? `${s.id}-${i}` : `vsum-${i}`} className="hover:bg-gray-50 transition-colors">
                     <td className="p-2 border-r">{i + 1}</td>
                     <td className="p-2 border-r font-bold text-gray-800">{s.vehicleNo}</td>
                     <td className="p-2 border-r font-mono">{s.time}</td>
@@ -5562,8 +5498,8 @@ const TableOutput = ({
               The following foreign movement records found for this date do not have corresponding entries in the summary table above:
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {unmatchedRecords.map(r => (
-                <div key={r.id} className="bg-white p-3 rounded-xl border border-red-200 shadow-sm flex flex-col gap-1 hover:border-red-400 transition-colors group">
+              {unmatchedRecords.map((r, rIdx) => (
+                <div key={r.id ? `${r.id}-${rIdx}` : `${r.passport || 'unmatched'}-${rIdx}`} className="bg-white p-3 rounded-xl border border-red-200 shadow-sm flex flex-col gap-1 hover:border-red-400 transition-colors group">
                   <div className="flex justify-between items-center text-[10px]">
                     <span className="font-black text-red-600">{r.vehicleInfo}</span>
                     <span className={`px-2 py-0.5 rounded-full font-black text-white ${r.mode === 'IN' ? 'bg-emerald-500' : 'bg-orange-500'}`}>{r.mode}</span>
@@ -7618,6 +7554,11 @@ export default function App() {
     return map;
   }, [records, passportToLatestInfo]);
 
+  // Exact CRT Active Still-In Dataset (Direct pass to Telegraph & Tables)
+  const crtActiveRecords = useMemo(() => {
+    return getCRTActiveStillInRecords(records, movementMap);
+  }, [records, movementMap]);
+
   // --- TAB RENDERERS ---
 
   const handleLogin = () => {
@@ -7960,12 +7901,12 @@ export default function App() {
                         { id: 'auditLog', label: 'Activity & Audit Log (Superadmin)', short: 'AUDIT', icon: Activity }
                       ] : []),
                       { id: 'info', label: 'System & Quota Info', short: 'INFO', icon: ShieldCheck },
-                    ].map(t => {
+                    ].map((t, tIdx) => {
                       const IconComp = t.icon;
                       const isActive = activeTab === t.id;
                       return (
                         <button
-                          key={t.id}
+                          key={t.id ? `${t.id}-${tIdx}` : `tab-${tIdx}`}
                           onClick={() => {
                             switchTab(t.id as Tab);
                             setIsMainMenuOpen(false);
@@ -8186,7 +8127,7 @@ export default function App() {
             <div className="space-y-3">
               {deviceSessions.map((session, idx) => (
                 <div 
-                  key={session.deviceId || idx}
+                  key={session.deviceId ? `${session.deviceId}-${idx}` : `session-${idx}`}
                   className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
                     session.kicked 
                       ? 'bg-rose-50/60 border-rose-200 text-rose-900 opacity-70' 
@@ -8366,9 +8307,9 @@ export default function App() {
 
               {passportSearchResults.length > 0 && (
                 <div className="mt-1 bg-white border border-indigo-100 rounded-lg shadow-xl overflow-hidden z-50 relative">
-                  {passportSearchResults.map(r => (
+                  {passportSearchResults.map((r, rIdx) => (
                     <button
-                      key={r.id || r.passport}
+                      key={r.id ? `${r.id}-${rIdx}` : `${r.passport || 'rec'}-${rIdx}`}
                       type="button"
                       onClick={() => selectPassportMatch(r)}
                       className="w-full text-left p-3 hover:bg-indigo-50 border-b border-indigo-50 last:border-0 transition-colors flex items-center justify-between"
@@ -8412,9 +8353,9 @@ export default function App() {
 
               {nameSearchResults.length > 0 && (
                 <div className="mt-1 bg-white border border-indigo-100 rounded-lg shadow-xl overflow-hidden z-50 relative">
-                  {nameSearchResults.map(r => (
+                  {nameSearchResults.map((r, rIdx) => (
                     <button
-                      key={r.id || r.passport}
+                      key={r.id ? `${r.id}-${rIdx}` : `${r.passport || 'rec'}-${rIdx}`}
                       type="button"
                       onClick={() => selectNameMatch(r)}
                       className="w-full text-left p-3 hover:bg-indigo-50 border-b border-indigo-50 last:border-0 transition-colors flex items-center justify-between"
@@ -8520,11 +8461,11 @@ export default function App() {
           </div>
 
           <div className="space-y-4">
-            <datalist id="natList">{(masterData || []).filter(m => m && m.type === 'Nationality' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="visaList">{(masterData || []).filter(m => m && m.type === 'Visa' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="stayList">{(masterData || []).filter(m => m && m.type === 'Stay' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="vehicleList">{(masterData || []).filter(m => m && m.type === 'Vehicle' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="locationList">{(masterData || []).filter(m => m && m.type === 'Stay' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
+            <datalist id="natList">{(masterData || []).filter(m => m && m.type === 'Nationality' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="visaList">{(masterData || []).filter(m => m && m.type === 'Visa' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="stayList">{(masterData || []).filter(m => m && m.type === 'Stay' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="vehicleList">{(masterData || []).filter(m => m && m.type === 'Vehicle' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="locationList">{(masterData || []).filter(m => m && m.type === 'Stay' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
 
             <div>
               <label className="input-label">နိုင်ငံသား (Nationality)</label>
@@ -8656,11 +8597,11 @@ export default function App() {
           </div>
 
           <div className="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 border-t pt-8 mt-4">
-            <datalist id="agentList">{(masterData || []).filter(m => m && m.type === 'Agent' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="contactList">{(masterData || []).filter(m => m && m.type === 'Contact' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="ffeOfficialList">{(masterData || []).filter(m => m && m.type === 'Official' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="ffeTitleList">{(masterData || []).filter(m => m && m.type === 'Title' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
-            <datalist id="permitDescriptionList">{(masterData || []).filter(m => m && m.type === 'PermitDescription' && m.name).map(m => <option key={m.id} value={m.name} />)}</datalist>
+            <datalist id="agentList">{(masterData || []).filter(m => m && m.type === 'Agent' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="contactList">{(masterData || []).filter(m => m && m.type === 'Contact' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="ffeOfficialList">{(masterData || []).filter(m => m && m.type === 'Official' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="ffeTitleList">{(masterData || []).filter(m => m && m.type === 'Title' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="permitDescriptionList">{(masterData || []).filter(m => m && m.type === 'PermitDescription' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
             
             <div>
               <label className="input-label text-emerald-800 font-black">Bring Up By (ခေါ်ဆောင်လာသူ)</label>
@@ -8925,7 +8866,7 @@ export default function App() {
           <div className="block md:hidden space-y-2">
              {filteredRecords.map((r, i) => (
                 <div 
-                   key={r.id}
+                   key={r.id ? `${r.id}-${i}` : `${r.passport || 'rec'}-${i}`}
                    onClick={() => setMobileDetailRecord(r)}
                    className="bg-white border border-slate-200/90 rounded-xl p-2.5 shadow-2xs hover:shadow-sm transition-all cursor-pointer space-y-2"
                 >
@@ -9027,7 +8968,7 @@ export default function App() {
                <tbody className="divide-y divide-gray-100 text-xs">
                   {filteredRecords.map((r, i) => (
                     <tr 
-                      key={r.id} 
+                      key={r.id ? `${r.id}-${i}` : `${r.passport || 'rec'}-${i}`} 
                       className={`hover:bg-gray-50 transition-colors group ${selectedIds.includes(r.id) ? 'bg-indigo-50/50' : ''}`}
                     >
                       <td className="p-2 text-center border-r border-gray-100">
@@ -9421,13 +9362,13 @@ export default function App() {
 
           {/* MOBILE VIEW (COMPACT DETAILED CARDS) */}
           <div className="block md:hidden space-y-2">
-            {list.map((m) => {
+            {list.map((m, mIdx) => {
               const nowMs = Date.now();
               const endTime = m.outTime ? m.outTime : nowMs;
               const stayedDays = m.inTime ? Math.max(1, Math.ceil((endTime - m.inTime) / (1000 * 60 * 60 * 24))) : 0;
               return (
                 <div 
-                  key={m.p}
+                  key={m.p ? `${m.p}-${mIdx}` : `mov-${mIdx}`}
                   className="bg-white border border-slate-200/90 rounded-xl p-2.5 shadow-2xs hover:shadow-sm transition-all cursor-pointer space-y-2"
                   onClick={() => {
                     setSearchQuery(m.p);
@@ -9501,7 +9442,7 @@ export default function App() {
                   const stayedDays = m.inTime ? Math.max(1, Math.ceil((endTime - m.inTime) / (1000 * 60 * 60 * 24))) : 0;
 
                   return (
-                    <tr key={m.p} className="hover:bg-gray-50 transition-colors group">
+                    <tr key={m.p ? `${m.p}-${i}` : `mov-${i}`} className="hover:bg-gray-50 transition-colors group">
                       <td className="p-2 text-center font-black text-gray-400 bg-gray-50/50 group-hover:text-indigo-600 border-r border-gray-100 text-[11px]">{i+1}</td>
                       <td className="p-2 border-r border-gray-100">
                         <div className="flex items-center gap-1.5 mb-0.5">
@@ -9989,6 +9930,7 @@ export default function App() {
             dossierHistory={dossierHistory}
             masterData={masterData}
             tempRecords={tempRecords}
+            crtActiveRecords={crtActiveRecords}
           />
         )}
         {activeTab === 'watchList' && (
@@ -10135,7 +10077,7 @@ export default function App() {
                   <div className="p-6 overflow-y-auto space-y-4 flex-1">
                      <h4 className="text-[10px] text-slate-400 font-black uppercase tracking-wider mb-2">Historical Records Timeline ({matchingLogs.length} total events)</h4>
                      {matchingLogs.map((r, i) => (
-                       <div key={r.id || i} className="p-5 border border-slate-100 rounded-2xl hover:border-indigo-100 hover:bg-slate-50/50 transition-all flex flex-col gap-4">
+                       <div key={r.id ? `${r.id}-${i}` : `log-${i}`} className="p-5 border border-slate-100 rounded-2xl hover:border-indigo-100 hover:bg-slate-50/50 transition-all flex flex-col gap-4">
                           <div className="flex justify-between items-center border-b pb-2">
                             <div className="flex items-center gap-3">
                               <span className={`px-2.5 py-1 rounded-full text-[10px] font-black tracking-widest border ${r.mode === 'IN' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-orange-50 text-orange-850 border-orange-200'}`}>
@@ -10754,7 +10696,7 @@ export default function App() {
                           const fNum = (val: number | string) => activePrintPreview.data.useBurmeseDigits ? toBurmeseDigits(val) : val;
 
                           return (
-                            <tr key={row.id} className="border-b border-black">
+                            <tr key={row.id ? `${row.id}-${idx}` : `telegraph-modal-row-${idx}`} className="border-b border-black">
                               <td className="p-1.5 border border-black text-center font-bold">{fNum(idx + 1)}</td>
                               <td className="p-1.5 border border-black font-extrabold uppercase text-left w-[110px] min-w-[110px] max-w-[110px] break-words whitespace-normal text-wrap leading-tight text-[12px]">{row.flightName}</td>
                               <td className="p-1.5 border border-black text-center font-mono">{fNum(row.time)}</td>
@@ -11503,7 +11445,7 @@ export default function App() {
                       const fNum = (val: number | string) => activePrintPreview.data.useBurmeseDigits ? toBurmeseDigits(val) : val;
 
                       return (
-                        <tr key={row.id} className="border-b border-black">
+                        <tr key={row.id ? `${row.id}-${idx}` : `telegraph-print-row-${idx}`} className="border-b border-black">
                           <td className="p-1.5 border border-black text-center font-bold">{fNum(idx + 1)}</td>
                           <td className="p-1.5 border border-black font-extrabold uppercase text-left">{row.flightName}</td>
                           <td className="p-1.5 border border-black text-center font-mono">{fNum(row.time)}</td>

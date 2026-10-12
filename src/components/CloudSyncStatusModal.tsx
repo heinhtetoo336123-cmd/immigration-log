@@ -291,11 +291,11 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
           {activeView === 'grid' ? (
             /* Compact 3-Column / 2-Row Matrix */
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {modules.map((m) => {
+              {modules.map((m, idx) => {
                 const Icon = m.icon;
                 return (
                   <div
-                    key={m.id}
+                    key={m.id ? `${m.id}-${idx}` : `meta-${idx}`}
                     className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-2.5 flex flex-col justify-between hover:border-slate-600 transition-colors"
                   >
                     <div className="flex items-center justify-between mb-1.5">

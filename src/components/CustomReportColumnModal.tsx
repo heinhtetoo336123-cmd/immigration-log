@@ -77,7 +77,7 @@ export const CustomReportColumnModal: React.FC<CustomReportColumnModalProps> = (
             const isVisible = visibleColumns.includes(col.id);
             return (
               <label
-                key={col.id}
+                key={col.id ? `${col.id}-${idx}` : `col-${idx}`}
                 onClick={() => onToggleColumn(col.id)}
                 className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer select-none ${
                   isVisible

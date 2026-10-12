@@ -1374,7 +1374,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
             <div className="space-y-4">
               {persons.map((person, index) => (
                 <div
-                  key={person.id}
+                  key={person.id ? `${person.id}-${index}` : `person-${index}`}
                   className="p-5 bg-slate-50/80 rounded-2xl border-2 border-indigo-100 relative space-y-4 transition-all hover:border-indigo-300"
                 >
                   <div className="flex justify-between items-center border-b border-slate-200 pb-2">
@@ -1445,8 +1445,8 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                         className="input-field bg-white border-slate-300 font-bold uppercase"
                       />
                       <datalist id="natList">
-                        {(masterData || []).filter(m => m && m.type === 'Nationality' && m.name).map(m => (
-                          <option key={m.id} value={m.name} />
+                        {(masterData || []).filter(m => m && m.type === 'Nationality' && m.name).map((m, mIdx) => (
+                          <option key={m.id ? `${m.id}-${mIdx}` : `${m.name}-${mIdx}`} value={m.name} />
                         ))}
                       </datalist>
                     </div>
@@ -1632,9 +1632,9 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
             { id: 'FLAGGED', label: 'တွေ့ရှိမှုရှိ/စိစစ်ဆဲ (Matches)', count: stats.flaggedCount, color: 'text-amber-600' },
             { id: 'CHECKED', label: 'မတွေ့ရှိပါ (No Match)', count: stats.checkedCount, color: 'text-emerald-600' },
             { id: 'PENDING', label: 'မစစ်ရသေး (Pending)', count: stats.pendingCount, color: 'text-slate-600' },
-          ].map(tab => (
+          ].map((tab, idx) => (
             <button
-              key={tab.id}
+              key={tab.id ? `${tab.id}-${idx}` : `tab-${idx}`}
               onClick={() => setStatusFilter(tab.id as any)}
               className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 statusFilter === tab.id
@@ -1689,7 +1689,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4">
-            {filteredList.map((rec) => {
+            {filteredList.map((rec, idx) => {
               const isConfirmedMatch = rec.status === 'CONFIRMED_MATCH';
               const isClearedMismatch = rec.status === 'CLEARED_MISMATCH';
               const isFlagged = rec.status === 'FLAGGED';
@@ -1697,7 +1697,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
 
               return (
                 <div
-                  key={rec.id}
+                  key={rec.id ? `${rec.id}-${idx}` : `wl-${idx}`}
                   className={`bg-white rounded-3xl p-5 sm:p-6 border transition-all hover:shadow-lg space-y-4 relative ${
                     isConfirmedMatch
                       ? 'border-rose-400 ring-2 ring-rose-300 bg-rose-50/20'
@@ -1802,7 +1802,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
 
                       return (
                         <div
-                          key={person.id}
+                          key={person.id ? `${person.id}-${pIdx}` : `person-${pIdx}`}
                           className="bg-slate-50/70 p-3.5 rounded-2xl border border-slate-200/80 space-y-2 hover:border-indigo-200 transition-colors"
                         >
                           <div className="flex justify-between items-start">
@@ -2020,7 +2020,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                 const chkEntries: any[] = pResult?.checkingEntries || [];
 
                 return (
-                  <div key={person.id} className="bg-slate-900 rounded-2xl border border-slate-800 p-5 sm:p-6 space-y-4 shadow-md">
+                  <div key={person.id ? `${person.id}-${idx}` : `person-${idx}`} className="bg-slate-900 rounded-2xl border border-slate-800 p-5 sm:p-6 space-y-4 shadow-md">
                     {/* Person Header */}
                     <div className="flex justify-between items-center border-b border-slate-800 pb-3 flex-wrap gap-2">
                       <div className="flex items-center gap-2.5 flex-wrap">
@@ -2101,7 +2101,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                             </thead>
                             <tbody className="divide-y divide-slate-800">
                               {matchedRecs.map((r, rIdx) => (
-                                <tr key={r.id} className="hover:bg-slate-900/60 transition-colors">
+                                <tr key={r.id ? `${r.id}-${rIdx}` : `match-${rIdx}`} className="hover:bg-slate-900/60 transition-colors">
                                   <td className="p-2.5 border-r border-slate-800 font-bold text-slate-400">{rIdx + 1}</td>
                                   <td className="p-2.5 border-r border-slate-800 font-mono text-[11px] text-slate-300">{r.timestamp}</td>
                                   <td className="p-2.5 border-r border-slate-800 font-black">
@@ -2168,7 +2168,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                             </thead>
                             <tbody className="divide-y divide-slate-800">
                               {chkEntries.map((ce: any, ceIdx: number) => (
-                                <tr key={ce.id || ceIdx} className="hover:bg-slate-900/60 transition-colors">
+                                <tr key={ce.id ? `${ce.id}-${ceIdx}` : `ce-${ceIdx}`} className="hover:bg-slate-900/60 transition-colors">
                                   <td className="p-2.5 border-r border-slate-800 font-bold text-slate-400">{ceIdx + 1}</td>
                                   <td className="p-2.5 border-r border-slate-800 font-mono text-[11px] text-slate-300">{toBurmeseFormattedDate(ce.checkDate || ce.date || '')}</td>
                                   <td className="p-2.5 border-r border-slate-800 font-bold text-white text-left">
@@ -2584,7 +2584,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                     ၂။ မေးမြန်းထားသည့် ပုဂ္ဂိုလ်များ၏ ကိုယ်ရေးအချက်အလက်များ -
                   </div>
                   {activeReportRecord.persons.map((p, idx) => (
-                    <div key={p.id} className="grid grid-cols-2 gap-2 border-b border-black/20 pb-2.5 last:border-0 last:pb-0 pt-1">
+                    <div key={p.id ? `${p.id}-${idx}` : `p-${idx}`} className="grid grid-cols-2 gap-2 border-b border-black/20 pb-2.5 last:border-0 last:pb-0 pt-1">
                       <div><span className="font-bold">({toBurmeseDigits(idx + 1)}) အမည်:</span> {p.name}</div>
                       <div><span className="font-bold">နိုင်ငံကူးလက်မှတ်အမှတ်:</span> {p.passport || '-'}</div>
                       <div><span className="font-bold">နိုင်ငံသား:</span> {p.nationality || '-'}</div>
@@ -2611,7 +2611,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                     const chks: any[] = matchInfo?.checkingEntries || [];
 
                     return (
-                      <div key={p.id} className="space-y-2 border-b border-black/20 pb-3 last:border-0 last:pb-0">
+                      <div key={p.id ? `${p.id}-${pIdx}` : `p-${pIdx}`} className="space-y-2 border-b border-black/20 pb-3 last:border-0 last:pb-0">
                         <div className="font-bold text-[13px] flex items-center justify-between flex-wrap gap-1 bg-slate-100 p-1.5 border border-black/30">
                           <span>
                             ({toBurmeseDigits(pIdx + 1)}) {p.name} ({p.passport || 'No Passport'}) - {p.nationality || ''}
@@ -2645,7 +2645,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                               </thead>
                               <tbody>
                                 {recs.map((r, rIdx) => (
-                                  <tr key={r.id} className="border-b border-black">
+                                  <tr key={r.id ? `${r.id}-${rIdx}` : `rec-${rIdx}`} className="border-b border-black">
                                     <td className="p-1 border border-black font-bold">{toBurmeseDigits(rIdx + 1)}</td>
                                     <td className="p-1 border border-black">{toBurmeseFormattedDate(r.timestamp.split(', ')[0])}</td>
                                     <td className="p-1 border border-black font-bold">{r.mode === 'IN' ? 'အဝင်' : 'အထွက်'}</td>
@@ -2684,7 +2684,7 @@ ${reportOfficerTitle || 'ဒုတိယလဝကမှူး'}
                               </thead>
                               <tbody>
                                 {chks.map((c: any, cIdx: number) => (
-                                  <tr key={c.id || cIdx} className="border-b border-black">
+                                  <tr key={c.id ? `${c.id}-${cIdx}` : `c-${cIdx}`} className="border-b border-black">
                                     <td className="p-1 border border-black font-bold">{toBurmeseDigits(cIdx + 1)}</td>
                                     <td className="p-1 border border-black">{toBurmeseFormattedDate(c.checkDate)}</td>
                                     <td className="p-1 border border-black text-left">{c.confirmedAddress || c.originalAddress || '-'}</td>

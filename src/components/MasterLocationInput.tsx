@@ -124,8 +124,8 @@ export const MasterLocationInput: React.FC<MasterLocationInputProps> = ({
     <div ref={containerRef} className="space-y-3 relative">
       {/* Native datalist for browser fallback */}
       <datalist id={datalistId}>
-        {stayMasterItems.map(m => (
-          <option key={m.name} value={m.name}>
+        {stayMasterItems.map((m, mIdx) => (
+          <option key={`${m.name}-${mIdx}`} value={m.name}>
             {m.linkedValue ? `${m.name} (${m.linkedValue})` : m.name}
           </option>
         ))}
@@ -237,11 +237,11 @@ export const MasterLocationInput: React.FC<MasterLocationInputProps> = ({
                 ကိုက်ညီသော Master Data မရှိပါ (အသစ်အဖြစ် တိုက်ရိုက်ရိုက်ထည့်နိုင်ပါသည်)
               </div>
             ) : (
-              filteredSuggestions.map(item => {
+              filteredSuggestions.map((item, idx) => {
                 const isSelected = item.name.toLowerCase() === (locationValue || '').toLowerCase().trim();
                 return (
                   <div
-                    key={'sugg_' + item.name}
+                    key={'sugg_' + item.name + '_' + idx}
                     onClick={() => handleSelectMaster(item)}
                     className={`p-2.5 rounded-xl text-xs cursor-pointer flex items-center justify-between gap-3 transition-colors ${
                       isSelected 
@@ -292,9 +292,9 @@ export const MasterLocationInput: React.FC<MasterLocationInputProps> = ({
             <Sparkles size={11} className="text-amber-500" />
             <span>အသုံးများ:</span>
           </span>
-          {stayMasterItems.slice(0, 6).map(m => (
+          {stayMasterItems.slice(0, 6).map((m, idx) => (
             <button
-              key={'pill_' + m.name}
+              key={'pill_' + m.name + '_' + idx}
               type="button"
               onClick={() => handleSelectMaster(m)}
               className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border transition-all cursor-pointer ${
