@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps } from './lib/firebase';
+import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, getDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps } from './lib/firebase';
 import { 
   Link2,
   Link,
@@ -5768,31 +5768,45 @@ export default function App() {
         }
 
         // Live Role Sync: If Superadmin changed this device's role in Cloud
-        if (data.accountRole && cloudAuthUser && cloudAuthUser.role !== data.accountRole) {
-          const updatedUser: CloudAuthUser = {
-            ...cloudAuthUser,
-            role: data.accountRole
-          };
-          setCloudAuthUser(updatedUser);
-          localStorage.setItem('imm_pwa_cloud_auth_user', JSON.stringify(updatedUser));
-          if (data.accountRole === 'Viewer') {
-            showToast("🔒 Superadmin မှ ဤစက်အား Viewer (View-Only Mode) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ");
-          } else if (data.accountRole === 'Editor') {
-            showToast("✏️ Superadmin မှ ဤစက်အား Editor အဆင့်သို့ ပြောင်းလဲလိုက်ပါပြီ");
-          } else if (data.accountRole === 'Superadmin') {
-            showToast("👑 Superadmin မှ ဤစက်အား Superadmin အဆင့်သို့ တိုးမြှင့်လိုက်ပါပြီ");
-          }
+        if (data.accountRole) {
+          setCloudAuthUser(prev => {
+            if (!prev) return prev;
+            if (prev.role !== data.accountRole) {
+              const updatedUser: CloudAuthUser = {
+                ...prev,
+                role: data.accountRole as CloudRole
+              };
+              localStorage.setItem('imm_pwa_cloud_auth_user', JSON.stringify(updatedUser));
+              if (data.accountRole === 'Viewer') {
+                showToast("🔒 Superadmin မှ ဤစက်အား Viewer (View-Only Mode) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ");
+              } else if (data.accountRole === 'Editor') {
+                showToast("✏️ Superadmin မှ ဤစက်အား Editor အဆင့်သို့ ပြောင်းလဲလိုက်ပါပြီ");
+              } else if (data.accountRole === 'Superadmin') {
+                showToast("👑 Superadmin မှ ဤစက်အား Superadmin အဆင့်သို့ တိုးမြှင့်လိုက်ပါပြီ");
+              }
+              return updatedUser;
+            }
+            return prev;
+          });
         }
       });
 
       return () => {
         if (unsub) unsub();
       };
-    }, [cloudAuthUser?.deviceId, cloudAuthUser?.username, cloudAuthUser?.role]);
+    }, [cloudAuthUser?.deviceId, cloudAuthUser?.username]);
 
     // Subscribe to all connected device sessions for SuperAdmin live monitoring
     useEffect(() => {
       if (cloudAuthUser?.role !== 'Superadmin') return;
+
+      // Immediately fetch latest sessions from Cloud
+      fetchDeviceSessions(true).then((sessions) => {
+        if (Array.isArray(sessions) && sessions.length > 0) {
+          setDeviceSessions(sessions);
+          localStorage.setItem('imm_pwa_device_sessions', JSON.stringify(sessions));
+        }
+      }).catch(() => {});
 
       const unsub = subscribeToDeviceSessions((sessions) => {
         if (Array.isArray(sessions) && sessions.length > 0) {
@@ -5820,11 +5834,29 @@ export default function App() {
         accountRole: activeUser.role,
         username: activeUser.username,
         lastActive: now.toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' }),
-        lastPingTimestamp: now.getTime(),
-        kicked: false
+        lastPingTimestamp: now.getTime()
       };
 
-      await saveDeviceSession(newSession);
+      const result = await saveDeviceSession(newSession);
+      if (result && typeof result === 'object') {
+        if (result.kicked) {
+          setCloudAuthUser(null);
+          localStorage.removeItem('imm_pwa_cloud_auth_user');
+          setShowCloudLoginModal(true);
+          setLoginAuthError("⚠️ သင်၏ စက်အသုံးပြုခွင့် (Device Session) အား SuperAdmin မှ ပိတ်သိမ်း (Revoke/Kick) လိုက်ပါပြီ။");
+          showToast("⛔ သင်၏ စက်အသုံးပြုခွင့်အား SuperAdmin မှ ပိတ်သိမ်း (Kick) လိုက်ပါပြီ");
+        } else if (result.accountRole && activeUser.role !== result.accountRole) {
+          const updatedUser: CloudAuthUser = {
+            ...activeUser,
+            role: result.accountRole as CloudRole
+          };
+          setCloudAuthUser(updatedUser);
+          localStorage.setItem('imm_pwa_cloud_auth_user', JSON.stringify(updatedUser));
+          if (result.accountRole === 'Viewer') {
+            showToast("🔒 Superadmin မှ ဤစက်အား Viewer (View-Only Mode) သို့ ပြောင်းလဲသတ်မှတ်လိုက်ပါပြီ");
+          }
+        }
+      }
     };
 
     // Hourly Heartbeat Timer Effect (1 Hour Interval = 3,600,000ms to minimize Cloud Read/Write Quota)
@@ -6113,8 +6145,34 @@ export default function App() {
         try {
           const parsed = JSON.parse(savedCloud);
           if (parsed && parsed.username) {
+            const devId = parsed.deviceId || localStorage.getItem('imm_pwa_device_id') || `dev_${Date.now()}`;
+            parsed.deviceId = devId;
+            localStorage.setItem('imm_pwa_device_id', devId);
             setCloudAuthUser(parsed);
             setShowCloudLoginModal(false);
+
+            // Startup security verification: Check if Superadmin has kicked or demoted this device in Cloud
+            if (parsed.role !== 'Superadmin') {
+              getDeviceSession(devId).then((cloudSession) => {
+                if (cloudSession?.kicked) {
+                  setCloudAuthUser(null);
+                  localStorage.removeItem('imm_pwa_cloud_auth_user');
+                  setShowCloudLoginModal(true);
+                  setLoginAuthError("⚠️ သင်၏ စက်အသုံးပြုခွင့် (Device Session) အား SuperAdmin မှ ပိတ်သိမ်း (Revoke/Kick) လိုက်ပါပြီ။ အကောင့်အသစ်ဖြင့် ပြန်လည်ဝင်ရောက်ပါ");
+                  showToast("⛔ သင်၏ စက်အသုံးပြုခွင့်အား SuperAdmin မှ ပိတ်သိမ်း (Kick) လိုက်ပါပြီ");
+                } else if (cloudSession?.accountRole && cloudSession.accountRole !== parsed.role) {
+                  const updated: CloudAuthUser = {
+                    ...parsed,
+                    role: cloudSession.accountRole as CloudRole
+                  };
+                  setCloudAuthUser(updated);
+                  localStorage.setItem('imm_pwa_cloud_auth_user', JSON.stringify(updated));
+                  if (cloudSession.accountRole === 'Viewer') {
+                    showToast("🔒 Superadmin မှ ဤစက်အား Viewer (View-Only Mode) သို့ ပြောင်းလဲသတ်မှတ်ထားပါသည်");
+                  }
+                }
+              }).catch(() => {});
+            }
           } else {
             localStorage.removeItem('imm_pwa_cloud_auth_user');
             setCloudAuthUser(null);
@@ -6182,9 +6240,22 @@ export default function App() {
         const deviceId = localStorage.getItem('imm_pwa_device_id') || `dev_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         localStorage.setItem('imm_pwa_device_id', deviceId);
 
+        // Check if this device is kicked or restricted by Superadmin
+        const existingSession = await getDeviceSession(deviceId);
+        if (existingSession?.kicked) {
+          setLoginAuthError("⚠️ ဤစက် (Device) အား SuperAdmin မှ ပိတ်ပင်ထားပါသည် (Device Kicked/Blocked)။ စက်အသုံးပြုခွင့် ပြန်လည်မရရှိသေးပါ");
+          showToast("⛔ ဤစက်အား SuperAdmin မှ ပိတ်ပင်ထားပါသည် (Kicked)");
+          return;
+        }
+
+        // If Superadmin previously demoted this device to Viewer, enforce Viewer (unless logging in as Superadmin)
+        const effectiveRole: CloudRole = (existingSession?.accountRole === 'Viewer' && matchedRole !== 'Superadmin')
+          ? 'Viewer'
+          : (existingSession?.accountRole || matchedRole);
+
         const authObj: CloudAuthUser = {
           username: u,
-          role: matchedRole,
+          role: effectiveRole,
           deviceName: devName,
           deviceId
         };
@@ -6197,14 +6268,13 @@ export default function App() {
         const freshSession = {
           deviceId,
           deviceName: devName,
-          accountRole: matchedRole,
+          accountRole: effectiveRole,
           username: u,
           lastActive: now.toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' }),
-          lastPingTimestamp: now.getTime(),
-          kicked: false
+          lastPingTimestamp: now.getTime()
         };
 
-        saveDeviceSession(freshSession).catch(() => {});
+        saveDeviceSession(freshSession, true).catch(() => {});
 
         setLoginAuthError(null);
         setLoginUsernameInput('');

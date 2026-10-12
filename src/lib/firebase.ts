@@ -8,7 +8,8 @@ import {
   onSnapshot, 
   collection, 
   getDocs,
-  deleteDoc
+  deleteDoc,
+  updateDoc
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import config from '../../firebase-applet-config.json';
@@ -73,7 +74,7 @@ export const setFirestoreUnavailable = (val: boolean) => {
 
 export const checkIsFirestoreUnavailable = (): boolean => isFirestoreUnavailable;
 
-// Safe error detection helper: matches connection, not-found, quota, and offline errors
+// Safe error detection helper: matches connection and offline errors
 export const isOfflineOrNetworkError = (err: any): boolean => {
   if (!err) return false;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
@@ -81,25 +82,14 @@ export const isOfflineOrNetworkError = (err: any): boolean => {
   const msg = String(err?.message || err || '').toLowerCase();
   return (
     code === 'unavailable' ||
-    code === 'failed-precondition' ||
-    code === 'not-found' ||
-    code === 'permission-denied' ||
     code.includes('offline') ||
     code.includes('network') ||
     code.includes('timeout') ||
-    code.includes('not-found') ||
-    code.includes('admin-restricted-operation') ||
-    code.includes('operation-not-allowed') ||
     msg.includes('client is offline') ||
     msg.includes('offline') ||
-    msg.includes('database not found') ||
-    msg.includes('not found') ||
     msg.includes('network-request-failed') ||
     msg.includes('could not reach cloud firestore backend') ||
-    msg.includes('failed to get document because the client is offline') ||
-    msg.includes('admin-restricted-operation') ||
-    msg.includes('restricted to administrators') ||
-    msg.includes('operation-not-allowed')
+    msg.includes('failed to get document because the client is offline')
   );
 };
 
@@ -727,8 +717,14 @@ export const checkAndFetchUpdatedCollections = async (
 let lastDeviceSessionPingTime = 0;
 const SESSION_PING_THROTTLE_MS = 10 * 60 * 1000;
 
-export const saveDeviceSession = async (session: any, force: boolean = false): Promise<boolean> => {
-  if (!session || !session.deviceId) return false;
+export interface DeviceSessionResult {
+  success: boolean;
+  kicked?: boolean;
+  accountRole?: string;
+}
+
+export const saveDeviceSession = async (session: any, force: boolean = false): Promise<DeviceSessionResult> => {
+  if (!session || !session.deviceId) return { success: false };
 
   // Always update local session storage fallback
   try {
@@ -744,30 +740,94 @@ export const saveDeviceSession = async (session: any, force: boolean = false): P
     localStorage.setItem('imm_pwa_device_sessions', JSON.stringify(sessions));
   } catch {}
 
-  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return true;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { success: true };
   }
 
   const now = Date.now();
   if (!force && (now - lastDeviceSessionPingTime < SESSION_PING_THROTTLE_MS)) {
-    return true; // Throttled to save writes
+    return { success: true }; // Throttled in-memory to save writes
   }
 
   try {
-    await ensureAuthenticated();
+    try { await ensureAuthenticated(); } catch {}
     const docRef = doc(db, 'activeSessions', session.deviceId);
-    await setDoc(docRef, { ...session, lastPingTimestamp: Date.now() }, { merge: true });
-    lastDeviceSessionPingTime = Date.now();
-    return true;
-  } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-      isFirestoreUnavailable = true;
+    const docSnap = await getDoc(docRef);
+
+    if (docSnap.exists()) {
+      const existing = docSnap.data();
+      // CRITICAL: Preserve Superadmin authority!
+      // Heartbeats must NEVER overwrite 'kicked' or 'accountRole' if Superadmin modified them!
+      const updatePayload: any = {
+        lastActive: session.lastActive || new Date().toLocaleString(),
+        lastPingTimestamp: Date.now(),
+        deviceName: session.deviceName || existing.deviceName || 'PWA Client Device',
+        username: session.username || existing.username || 'USER'
+      };
+
+      if (!existing.accountRole) {
+        updatePayload.accountRole = session.accountRole || 'Editor';
+      }
+
+      await updateDoc(docRef, updatePayload);
+      lastDeviceSessionPingTime = Date.now();
+      return {
+        success: true,
+        kicked: !!existing.kicked,
+        accountRole: existing.accountRole || session.accountRole
+      };
+    } else {
+      // First-time registration for this device
+      const initialPayload = {
+        ...session,
+        kicked: false,
+        accountRole: session.accountRole || 'Editor',
+        lastPingTimestamp: Date.now()
+      };
+      await setDoc(docRef, initialPayload);
+      lastDeviceSessionPingTime = Date.now();
+      return {
+        success: true,
+        kicked: false,
+        accountRole: session.accountRole || 'Editor'
+      };
     }
-    return true;
+  } catch (err: any) {
+    console.warn("saveDeviceSession error:", err);
+    return { success: false };
+  }
+};
+
+export const getDeviceSession = async (deviceId: string): Promise<any | null> => {
+  if (!deviceId) return null;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    try {
+      const saved = localStorage.getItem('imm_pwa_device_sessions');
+      if (saved) {
+        const sessions = JSON.parse(saved);
+        return sessions.find((s: any) => s.deviceId === deviceId) || null;
+      }
+    } catch {}
+    return null;
+  }
+  try {
+    try { await ensureAuthenticated(); } catch {}
+    const docRef = doc(db, 'activeSessions', deviceId);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return snap.data();
+    }
+    return null;
+  } catch (err) {
+    console.warn("getDeviceSession error:", err);
+    return null;
   }
 };
 
 export const setDeviceKickedStatus = async (deviceId: string, kicked: boolean): Promise<boolean> => {
+  if (!deviceId) return false;
+
+  // 1. Update localStorage fallback immediately
   try {
     const saved = localStorage.getItem('imm_pwa_device_sessions');
     let sessions: any[] = saved ? JSON.parse(saved) : [];
@@ -777,24 +837,27 @@ export const setDeviceKickedStatus = async (deviceId: string, kicked: boolean): 
     }
   } catch {}
 
-  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return true;
   }
 
+  // 2. Commit directly to Firestore
   try {
-    await ensureAuthenticated();
+    try { await ensureAuthenticated(); } catch {}
     const docRef = doc(db, 'activeSessions', deviceId);
-    await setDoc(docRef, { kicked }, { merge: true });
+    await setDoc(docRef, { kicked, lastKickedAt: Date.now() }, { merge: true });
+    cachedDeviceSessions = null;
     return true;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-      isFirestoreUnavailable = true;
-    }
-    return true;
+    console.error("setDeviceKickedStatus Firestore error:", err);
+    return false;
   }
 };
 
 export const updateDeviceRole = async (deviceId: string, accountRole: string): Promise<boolean> => {
+  if (!deviceId) return false;
+
+  // 1. Update localStorage fallback immediately
   try {
     const saved = localStorage.getItem('imm_pwa_device_sessions');
     let sessions: any[] = saved ? JSON.parse(saved) : [];
@@ -804,24 +867,26 @@ export const updateDeviceRole = async (deviceId: string, accountRole: string): P
     }
   } catch {}
 
-  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return true;
   }
 
+  // 2. Commit directly to Firestore
   try {
-    await ensureAuthenticated();
+    try { await ensureAuthenticated(); } catch {}
     const docRef = doc(db, 'activeSessions', deviceId);
-    await setDoc(docRef, { accountRole }, { merge: true });
+    await setDoc(docRef, { accountRole, lastRoleUpdateAt: Date.now() }, { merge: true });
+    cachedDeviceSessions = null;
     return true;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-      isFirestoreUnavailable = true;
-    }
-    return true;
+    console.error("updateDeviceRole Firestore error:", err);
+    return false;
   }
 };
 
 export const deleteDeviceSession = async (deviceId: string): Promise<boolean> => {
+  if (!deviceId) return false;
+
   try {
     const saved = localStorage.getItem('imm_pwa_device_sessions');
     let sessions: any[] = saved ? JSON.parse(saved) : [];
@@ -831,26 +896,27 @@ export const deleteDeviceSession = async (deviceId: string): Promise<boolean> =>
     }
   } catch {}
 
-  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return true;
   }
 
   try {
-    await ensureAuthenticated();
+    try { await ensureAuthenticated(); } catch {}
     const docRef = doc(db, 'activeSessions', deviceId);
     await deleteDoc(docRef);
+    cachedDeviceSessions = null;
     return true;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-      isFirestoreUnavailable = true;
-    }
-    return true;
+    console.error("deleteDeviceSession Firestore error:", err);
+    return false;
   }
 };
 
-// No real-time subscription loop - reads locally
+// Real-time single-device listener for kick status and role sync
 export const subscribeToMyDeviceSession = (deviceId: string, onUpdate: (data: any) => void) => {
   if (!deviceId) return () => {};
+
+  // First emit locally if available
   try {
     const saved = localStorage.getItem('imm_pwa_device_sessions');
     if (saved) {
@@ -859,7 +925,27 @@ export const subscribeToMyDeviceSession = (deviceId: string, onUpdate: (data: an
       if (mySession) onUpdate(mySession);
     }
   } catch {}
-  return () => {};
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return () => {};
+  }
+
+  try {
+    ensureAuthenticated().catch(() => {});
+    const docRef = doc(db, 'activeSessions', deviceId);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        onUpdate(data);
+      }
+    }, (err) => {
+      console.warn("subscribeToMyDeviceSession snapshot error:", err);
+    });
+    return unsubscribe;
+  } catch (err) {
+    console.warn("Failed to subscribeToMyDeviceSession:", err);
+    return () => {};
+  }
 };
 
 // Throttled in-memory session fetcher (10 minutes cache)
@@ -868,7 +954,7 @@ const SESSIONS_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export const fetchDeviceSessions = async (force: boolean = false): Promise<any[]> => {
   const localFallback = getFromLocalStorageFallback('activeSessions') || [];
-  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return localFallback;
   }
 
@@ -878,7 +964,7 @@ export const fetchDeviceSessions = async (force: boolean = false): Promise<any[]
   }
 
   try {
-    await ensureAuthenticated();
+    try { await ensureAuthenticated(); } catch {}
     const colRef = collection(db, 'activeSessions');
     const snapshot = await getDocs(colRef);
     const sessions: any[] = [];
@@ -894,17 +980,43 @@ export const fetchDeviceSessions = async (force: boolean = false): Promise<any[]
     }
     return localFallback;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
-      isFirestoreUnavailable = true;
-    }
+    console.warn("fetchDeviceSessions error:", err);
     return localFallback;
   }
 };
 
+// Real-time listener for Superadmin to monitor connected sessions
 export const subscribeToDeviceSessions = (onUpdate: (sessions: any[]) => void) => {
   const localFallback = getFromLocalStorageFallback('activeSessions');
   if (localFallback && localFallback.length > 0) {
     try { onUpdate(localFallback); } catch {}
   }
-  return () => {};
+
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return () => {};
+  }
+
+  try {
+    ensureAuthenticated().catch(() => {});
+    const colRef = collection(db, 'activeSessions');
+    const unsubscribe = onSnapshot(colRef, (snapshot) => {
+      const sessions: any[] = [];
+      snapshot.forEach((docSnap) => {
+        if (docSnap.exists()) {
+          sessions.push(docSnap.data());
+        }
+      });
+      if (sessions.length > 0) {
+        saveToLocalStorageFallback('activeSessions', sessions);
+        cachedDeviceSessions = { data: sessions, fetchedAt: Date.now() };
+        onUpdate(sessions);
+      }
+    }, (err) => {
+      console.warn("subscribeToDeviceSessions error:", err);
+    });
+    return unsubscribe;
+  } catch (err) {
+    console.warn("subscribeToDeviceSessions failed:", err);
+    return () => {};
+  }
 };
