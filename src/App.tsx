@@ -772,6 +772,12 @@ const StillInAnalytics = ({
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [subTab, setSubTab] = useState<'analysis' | 'reports'>('analysis');
+  const [siaLanguage, setSiaLanguage] = useState<'EN' | 'MM'>('MM');
+  const [useBurmeseDigits, setUseBurmeseDigits] = useState<boolean>(true);
+
+  const fmtNum = useCallback((val: number | string) => useBurmeseDigits ? toBurmeseDigits(val) : val, [useBurmeseDigits]);
+  const fmtCountry = useCallback((nat?: string) => siaLanguage === 'MM' ? getBurmeseCountryName(nat) : (nat || '-'), [siaLanguage]);
+  const fmtVisa = useCallback((visa?: string) => siaLanguage === 'MM' ? getBurmeseVisaType(visa) : (visa || '-'), [siaLanguage]);
 
   // Convert date picker format (YYYY-MM-DD) to millisecond timestamps safely
   const startMs = startDate ? new Date(startDate + "T00:00:00").getTime() : 0;
@@ -862,8 +868,8 @@ const StillInAnalytics = ({
         "Passport Number": m.p,
         "Full Name": m.n,
         "Gender": m.gender,
-        "Nationality": m.nat,
-        "Visa Type": m.visa,
+        "Nationality": fmtCountry(m.nat),
+        "Visa Type": fmtVisa(m.visa),
         "Current Stay Location": latest?.address || m.loc,
         "Detail Stay Description": latest?.stayDescription || '',
         "Stay Period From": m.start,
@@ -896,7 +902,7 @@ const StillInAnalytics = ({
   const exportNationalityExcel = () => {
     const natData = nationalityReportList.map((r, i) => ({
       "No": i + 1,
-      "Nationality": r.nationality,
+      "Nationality": fmtCountry(r.nationality),
       "Inbound Entries (IN)": r.inCount,
       "Outbound Exits (OUT)": r.outCount,
       "Net Stayers (Remaining)": r.net,
@@ -912,9 +918,13 @@ const StillInAnalytics = ({
   // 1c. Individual Nationality Print Trigger
   const printNationalityReport = () => {
     setActivePrintPreview({
-      title: `Nationality Inflow & Outflow Report (${startDate || 'All Time'} to ${endDate || 'All Time'})`,
+      title: siaLanguage === 'MM'
+        ? `နိုင်ငံခြားသား ဝင်ရောက်/ထွက်ခွာမှု ကိန်းဂဏန်း အစီရင်ခံစာ (${startDate || 'စတင်ချိန်မှ'} မှ ${endDate || 'ယနေ့အထိ'})`
+        : `Nationality Inflow & Outflow Report (${startDate || 'All Time'} to ${endDate || 'All Time'})`,
       type: 'SIA_NATIONALITY_REPORT',
-      data: nationalityReportList
+      data: nationalityReportList,
+      siaLanguage,
+      useBurmeseDigits
     });
   };
 
@@ -922,7 +932,7 @@ const StillInAnalytics = ({
   const exportVisaExcel = () => {
     const visaData = visaReportList.map((r, i) => ({
       "No": i + 1,
-      "Visa Type": r.visaType,
+      "Visa Type": fmtVisa(r.visaType),
       "Inbound Entries (IN)": r.inCount,
       "Outbound Exits (OUT)": r.outCount,
       "Total Movements": r.total
@@ -937,23 +947,31 @@ const StillInAnalytics = ({
   // 1e. Individual Visa Type Print Trigger
   const printVisaReport = () => {
     setActivePrintPreview({
-      title: `Visa Type Distribution Report (${startDate || 'All Time'} to ${endDate || 'All Time'})`,
+      title: siaLanguage === 'MM'
+        ? `ဗီဇာ အမျိုးအစားအလိုက် ခွဲခြားမှု အစီရင်ခံစာ (${startDate || 'စတင်ချိန်မှ'} မှ ${endDate || 'ယနေ့အထိ'})`
+        : `Visa Type Distribution Report (${startDate || 'All Time'} to ${endDate || 'All Time'})`,
       type: 'SIA_VISA_REPORT',
-      data: visaReportList
+      data: visaReportList,
+      siaLanguage,
+      useBurmeseDigits
     });
   };
 
   // 1f. Full SIA Print Trigger
   const printFullSiaReport = () => {
     setActivePrintPreview({
-      title: `STATISTICAL INVESTIGATION ANALYSIS (SIA) REPORT`,
+      title: siaLanguage === 'MM'
+        ? `ပြည်ထောင်စုသမ္မတမြန်မာနိုင်ငံတော်အစိုးရ • လူဝင်မှုကြီးကြပ်ရေးနှင့် ပြည်သူ့အင်အားဝန်ကြီးဌာန`
+        : `STATISTICAL INVESTIGATION ANALYSIS (SIA) REPORT`,
       type: 'SIA_FULL_REPORT',
       data: {
         nationalityList: nationalityReportList,
         visaList: visaReportList,
         startDate: startDate || 'All Time',
         endDate: endDate || 'All Time'
-      }
+      },
+      siaLanguage,
+      useBurmeseDigits
     });
   };
 
@@ -964,7 +982,7 @@ const StillInAnalytics = ({
     // Nationality report data
     const natData = nationalityReportList.map((r, i) => ({
       "No": i + 1,
-      "Nationality": r.nationality,
+      "Nationality": fmtCountry(r.nationality),
       "Inbound Entries (IN)": r.inCount,
       "Outbound Exits (OUT)": r.outCount,
       "Net Stayers (Remaining)": r.net,
@@ -976,7 +994,7 @@ const StillInAnalytics = ({
     // Visa type report data
     const visaData = visaReportList.map((r, i) => ({
       "No": i + 1,
-      "Visa Type": r.visaType,
+      "Visa Type": fmtVisa(r.visaType),
       "Inbound Entries (IN)": r.inCount,
       "Outbound Exits (OUT)": r.outCount,
       "Total Movements": r.total
@@ -991,88 +1009,89 @@ const StillInAnalytics = ({
 
   // 3. Word Document Export (SIA statistics with related official headers)
   const exportReportsToWord = () => {
+    const isMM = siaLanguage === 'MM';
     const headerHtml = `
       <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
       <head>
-        <title>Immigration Statistical Investigation Analysis (SIA) Report</title>
+        <title>${isMM ? 'လူဝင်မှုကြီးကြပ်ရေးဆိုင်ရာ စာရင်းအင်း အစီရင်ခံစာ (SIA)' : 'Immigration Statistical Investigation Analysis (SIA) Report'}</title>
         <style>
-          body { font-family: 'Arial', sans-serif; color: #333333; line-height: 1.5; padding: 20px; }
-          h1 { color: #1e3a8a; font-size: 18pt; text-align: center; margin-bottom: 5px; font-weight: bold; }
-          h2 { color: #0f172a; font-size: 13pt; border-bottom: 2px solid #1e3a8a; padding-bottom: 4px; margin-top: 30px; font-weight: bold; }
+          body { font-family: 'Pyidaungsu', 'Arial', sans-serif; color: #333333; line-height: 1.5; padding: 20px; }
+          h1 { color: #1e3a8a; font-size: 16pt; text-align: center; margin-bottom: 5px; font-weight: bold; }
+          h2 { color: #0f172a; font-size: 12pt; border-bottom: 2px solid #1e3a8a; padding-bottom: 4px; margin-top: 25px; font-weight: bold; }
           .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
           .meta-table td { padding: 4px; font-size: 10pt; }
           table.report-table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 25px; }
           table.report-table th { background-color: #1e3a8a; color: #ffffff; border: 1px solid #1e3a8a; padding: 8px; font-size: 10pt; font-weight: bold; text-align: left; }
           table.report-table td { border: 1px solid #dddddd; padding: 8px; font-size: 10pt; }
           table.report-table tr:nth-child(even) { background-color: #f8fafc; }
-          .footer { text-align: center; margin-top: 50px; font-size: 9pt; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 10px; }
+          .footer { text-align: center; margin-top: 40px; font-size: 9pt; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 10px; }
           .text-center { text-align: center; }
           .font-bold { font-weight: bold; }
         </style>
       </head>
       <body>
-        <h1>SECOND DIVISION • IMMIGRATION DEPARTMENT</h1>
-        <p class="text-center" style="font-size: 11pt; font-weight: bold; color: #475569; margin-top: 0;">Statistical Investigation Analysis (SIA) Official Report</p>
+        <h1>${isMM ? 'ပြည်ထောင်စုသမ္မတမြန်မာနိုင်ငံတော်အစိုးရ • လူဝင်မှုကြီးကြပ်ရေးနှင့် ပြည်သူ့အင်အားဝန်ကြီးဌာန' : 'SECOND DIVISION • IMMIGRATION DEPARTMENT'}</h1>
+        <p class="text-center" style="font-size: 11pt; font-weight: bold; color: #475569; margin-top: 0;">${isMM ? 'မြိတ်မြို့နယ် • နိုင်ငံခြားသား သွားလာမှုနှင့် နေထိုင်မှုဆိုင်ရာ စာရင်းအင်း သုတေသန အစီရင်ခံစာ (SIA)' : 'Statistical Investigation Analysis (SIA) Official Report'}</p>
         
         <table class="meta-table">
           <tr>
-            <td style="width: 50%;"><strong>Report Generated:</strong> ${new Date().toLocaleString()}</td>
-            <td style="width: 50%; text-align: right;"><strong>Filtered Date Range:</strong> ${startDate || 'All Time'} to ${endDate || 'All Time'}</td>
+            <td style="width: 50%;"><strong>${isMM ? 'ထုတ်ယူသည့် အချိန်' : 'Report Generated'}:</strong> ${new Date().toLocaleString()}</td>
+            <td style="width: 50%; text-align: right;"><strong>${isMM ? 'စစ်ဆေးသည့် ကာလ' : 'Filtered Date Range'}:</strong> ${startDate || (isMM ? 'စတင်ချိန်မှ' : 'All Time')} မှ ${endDate || (isMM ? 'ယနေ့အထိ' : 'All Time')}</td>
           </tr>
         </table>
 
-        <h2>1. Nationality Inflow & Outflow Statistical Breakdown</h2>
+        <h2>${isMM ? '၁။ နိုင်ငံအလိုက် ဝင်ရောက်သူနှင့် ထွက်ခွာသူ စာရင်းအင်း' : '1. Nationality Inflow & Outflow Statistical Breakdown'}</h2>
         <table class="report-table">
           <thead>
             <tr>
-              <th style="width: 8%;">No.</th>
-              <th>Nationality</th>
-              <th style="text-align: center;">Inbound (IN)</th>
-              <th style="text-align: center;">Outbound (OUT)</th>
-              <th style="text-align: center;">Net Staying</th>
-              <th style="text-align: center;">Total Movements</th>
+              <th style="width: 8%;">${isMM ? 'စဉ်' : 'No.'}</th>
+              <th>${isMM ? 'နိုင်ငံအမည် / နိုင်ငံသား' : 'Nationality'}</th>
+              <th style="text-align: center;">${isMM ? 'ဝင်ရောက်သူ (IN)' : 'Inbound (IN)'}</th>
+              <th style="text-align: center;">${isMM ? 'ထွက်ခွာသူ (OUT)' : 'Outbound (OUT)'}</th>
+              <th style="text-align: center;">${isMM ? 'နေထိုင်ဆဲ (Net)' : 'Net Staying'}</th>
+              <th style="text-align: center;">${isMM ? 'စုစုပေါင်း' : 'Total Movements'}</th>
             </tr>
           </thead>
           <tbody>
-            ${nationalityReportList.length === 0 ? '<tr><td colspan="6" class="text-center">No matching records logged.</td></tr>' : nationalityReportList.map((r, i) => `
+            ${nationalityReportList.length === 0 ? `<tr><td colspan="6" class="text-center">${isMM ? 'မှတ်တမ်းမရှိပါ။' : 'No matching records logged.'}</td></tr>` : nationalityReportList.map((r, i) => `
               <tr>
-                <td>${i + 1}</td>
-                <td class="font-bold">${r.nationality}</td>
-                <td class="text-center">${r.inCount}</td>
-                <td class="text-center">${r.outCount}</td>
-                <td class="text-center font-bold" style="color: ${r.net >= 0 ? '#15803d' : '#b91c1c'};">${r.net}</td>
-                <td class="text-center font-bold">${r.total}</td>
+                <td>${fmtNum(i + 1)}</td>
+                <td class="font-bold">${fmtCountry(r.nationality)}</td>
+                <td class="text-center">${fmtNum(r.inCount)}</td>
+                <td class="text-center">${fmtNum(r.outCount)}</td>
+                <td class="text-center font-bold" style="color: ${r.net >= 0 ? '#15803d' : '#b91c1c'};">${fmtNum(r.net)}</td>
+                <td class="text-center font-bold">${fmtNum(r.total)}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
 
-        <h2>2. Visa Type Distribution statistical Breakdown</h2>
+        <h2>${isMM ? '၂။ ဗီဇာ အမျိုးအစားအလိုက် ခွဲခြားမှု စာရင်းအင်း' : '2. Visa Type Distribution Statistical Breakdown'}</h2>
         <table class="report-table">
           <thead>
             <tr>
-              <th style="width: 8%;">No.</th>
-              <th>Visa Type</th>
-              <th style="text-align: center;">Inbound (IN)</th>
-              <th style="text-align: center;">Outbound (OUT)</th>
-              <th style="text-align: center;">Total Movements</th>
+              <th style="width: 8%;">${isMM ? 'စဉ်' : 'No.'}</th>
+              <th>${isMM ? 'ဗီဇာ အမျိုးအစား' : 'Visa Type'}</th>
+              <th style="text-align: center;">${isMM ? 'ဝင်ရောက်သူ (IN)' : 'Inbound (IN)'}</th>
+              <th style="text-align: center;">${isMM ? 'ထွက်ခွာသူ (OUT)' : 'Outbound (OUT)'}</th>
+              <th style="text-align: center;">${isMM ? 'စုစုပေါင်း' : 'Total Movements'}</th>
             </tr>
           </thead>
           <tbody>
-            ${visaReportList.length === 0 ? '<tr><td colspan="5" class="text-center">No matching records logged.</td></tr>' : visaReportList.map((r, i) => `
+            ${visaReportList.length === 0 ? `<tr><td colspan="5" class="text-center">${isMM ? 'မှတ်တမ်းမရှိပါ။' : 'No matching records logged.'}</td></tr>` : visaReportList.map((r, i) => `
               <tr>
-                <td>${i + 1}</td>
-                <td class="font-bold">${r.visaType}</td>
-                <td class="text-center">${r.inCount}</td>
-                <td class="text-center">${r.outCount}</td>
-                <td class="text-center font-bold">${r.total}</td>
+                <td>${fmtNum(i + 1)}</td>
+                <td class="font-bold">${fmtVisa(r.visaType)}</td>
+                <td class="text-center">${fmtNum(r.inCount)}</td>
+                <td class="text-center">${fmtNum(r.outCount)}</td>
+                <td class="text-center font-bold">${fmtNum(r.total)}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
 
         <div class="footer">
-          <p>CONFIDENTIAL IMMIGRATION DOCUMENTS • INTERNAL INVESTIGATION USE ONLY</p>
+          <p>${isMM ? 'လူဝင်မှုကြီးကြပ်ရေး ဝန်ကြီးဌာန • ရုံးသုံး လျှို့ဝှက် စာရွက်စာတမ်း' : 'CONFIDENTIAL IMMIGRATION DOCUMENTS • INTERNAL INVESTIGATION USE ONLY'}</p>
         </div>
       </body>
       </html>
@@ -1092,15 +1111,16 @@ const StillInAnalytics = ({
 
   // 4. HTML Document Export (SIA reports with styled clean layouts)
   const exportReportsToHtml = () => {
+    const isMM = siaLanguage === 'MM';
     const htmlContent = `
       <!DOCTYPE html>
-      <html lang="en">
+      <html lang="${isMM ? 'my' : 'en'}">
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Immigration SIA Report</title>
+        <title>${isMM ? 'လူဝင်မှုကြီးကြပ်ရေး စာရင်းအင်း အစီရင်ခံစာ (SIA)' : 'Immigration SIA Report'}</title>
         <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8fafc; color: #1e293b; padding: 40px 20px; line-height: 1.6; }
+          body { font-family: 'Pyidaungsu', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8fafc; color: #1e293b; padding: 40px 20px; line-height: 1.6; }
           .container { max-width: 950px; margin: 0 auto; background: #ffffff; padding: 40px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; }
           .header { text-align: center; border-bottom: 4px solid #1e40af; padding-bottom: 20px; margin-bottom: 30px; }
           .header h1 { font-size: 22px; font-weight: 800; color: #1e3a8a; margin: 0; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -1119,67 +1139,67 @@ const StillInAnalytics = ({
       <body>
         <div class="container">
           <div class="header">
-            <h1>Second Division • Immigration Department</h1>
-            <h2>Statistical Investigation Analysis (SIA) Official Report</h2>
+            <h1>${isMM ? 'ပြည်ထောင်စုသမ္မတမြန်မာနိုင်ငံတော်အစိုးရ • လူဝင်မှုကြီးကြပ်ရေးနှင့် ပြည်သူ့အင်အားဝန်ကြီးဌာန' : 'Second Division • Immigration Department'}</h1>
+            <h2>${isMM ? 'မြိတ်မြို့နယ် • နိုင်ငံခြားသား သွားလာမှုနှင့် နေထိုင်မှုဆိုင်ရာ စာရင်းအင်း သုတေသန အစီရင်ခံစာ (SIA)' : 'Statistical Investigation Analysis (SIA) Official Report'}</h2>
           </div>
           
           <div class="meta-grid">
-            <div><strong>Generated Date:</strong> ${new Date().toLocaleString()}</div>
-            <div><strong>Date Range Filter:</strong> ${startDate || 'All Time'} to ${endDate || 'All Time'}</div>
+            <div><strong>${isMM ? 'ထုတ်ယူသည့် ရက်စွဲ' : 'Generated Date'}:</strong> ${new Date().toLocaleString()}</div>
+            <div><strong>${isMM ? 'စစ်ဆေးသည့် ကာလ' : 'Date Range Filter'}:</strong> ${startDate || (isMM ? 'စတင်ချိန်မှ' : 'All Time')} မှ ${endDate || (isMM ? 'ယနေ့အထိ' : 'All Time')}</div>
           </div>
 
-          <div class="section-title">1. Nationality Inbound & Outbound statistical breakdown</div>
+          <div class="section-title">${isMM ? '၁။ နိုင်ငံအလိုက် ဝင်ရောက်သူနှင့် ထွက်ခွာသူ စာရင်းအင်း' : '1. Nationality Inbound & Outbound statistical breakdown'}</div>
           <table>
             <thead>
               <tr>
-                <th style="width: 8%;">No.</th>
-                <th>Nationality</th>
-                <th style="text-align: center;">Inbound (IN)</th>
-                <th style="text-align: center;">Outbound (OUT)</th>
-                <th style="text-align: center;">Net Staying</th>
-                <th style="text-align: center;">Total Movements</th>
+                <th style="width: 8%;">${isMM ? 'စဉ်' : 'No.'}</th>
+                <th>${isMM ? 'နိုင်ငံအမည် / နိုင်ငံသား' : 'Nationality'}</th>
+                <th style="text-align: center;">${isMM ? 'ဝင်ရောက်သူ (IN)' : 'Inbound (IN)'}</th>
+                <th style="text-align: center;">${isMM ? 'ထွက်ခွာသူ (OUT)' : 'Outbound (OUT)'}</th>
+                <th style="text-align: center;">${isMM ? 'နေထိုင်ဆဲ (Net)' : 'Net Staying'}</th>
+                <th style="text-align: center;">${isMM ? 'စုစုပေါင်း' : 'Total Movements'}</th>
               </tr>
             </thead>
             <tbody>
-              ${nationalityReportList.length === 0 ? '<tr><td colspan="6" class="text-center">No matching records logged.</td></tr>' : nationalityReportList.map((r, i) => `
+              ${nationalityReportList.length === 0 ? `<tr><td colspan="6" class="text-center">${isMM ? 'မှတ်တမ်းမရှိပါ။' : 'No matching records logged.'}</td></tr>` : nationalityReportList.map((r, i) => `
                 <tr>
-                  <td>${i + 1}</td>
-                  <td class="font-bold">${r.nationality}</td>
-                  <td class="text-center">${r.inCount}</td>
-                  <td class="text-center">${r.outCount}</td>
-                  <td class="text-center font-bold" style="color: ${r.net >= 0 ? '#166534' : '#991b1b'};">${r.net}</td>
-                  <td class="text-center font-bold">${r.total}</td>
+                  <td>${fmtNum(i + 1)}</td>
+                  <td class="font-bold">${fmtCountry(r.nationality)}</td>
+                  <td class="text-center">${fmtNum(r.inCount)}</td>
+                  <td class="text-center">${fmtNum(r.outCount)}</td>
+                  <td class="text-center font-bold" style="color: ${r.net >= 0 ? '#166534' : '#991b1b'};">${fmtNum(r.net)}</td>
+                  <td class="text-center font-bold">${fmtNum(r.total)}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
 
-          <div class="section-title">2. Visa Type Distribution statistical breakdown</div>
+          <div class="section-title">${isMM ? '၂။ ဗီဇာ အမျိုးအစားအလိုက် ခွဲခြားမှု စာရင်းအင်း' : '2. Visa Type Distribution statistical breakdown'}</div>
           <table>
             <thead>
               <tr>
-                <th style="width: 8%;">No.</th>
-                <th>Visa Type</th>
-                <th style="text-align: center;">Inbound (IN)</th>
-                <th style="text-align: center;">Outbound (OUT)</th>
-                <th style="text-align: center;">Total Movements</th>
+                <th style="width: 8%;">${isMM ? 'စဉ်' : 'No.'}</th>
+                <th>${isMM ? 'ဗီဇာ အမျိုးအစား' : 'Visa Type'}</th>
+                <th style="text-align: center;">${isMM ? 'ဝင်ရောက်သူ (IN)' : 'Inbound (IN)'}</th>
+                <th style="text-align: center;">${isMM ? 'ထွက်ခွာသူ (OUT)' : 'Outbound (OUT)'}</th>
+                <th style="text-align: center;">${isMM ? 'စုစုပေါင်း' : 'Total Movements'}</th>
               </tr>
             </thead>
             <tbody>
-              ${visaReportList.length === 0 ? '<tr><td colspan="5" class="text-center">No matching records logged.</td></tr>' : visaReportList.map((r, i) => `
+              ${visaReportList.length === 0 ? `<tr><td colspan="5" class="text-center">${isMM ? 'မှတ်တမ်းမရှိပါ။' : 'No matching records logged.'}</td></tr>` : visaReportList.map((r, i) => `
                 <tr>
-                  <td>${i + 1}</td>
-                  <td class="font-bold">${r.visaType}</td>
-                  <td class="text-center">${r.inCount}</td>
-                  <td class="text-center">${r.outCount}</td>
-                  <td class="text-center font-bold">${r.total}</td>
+                  <td>${fmtNum(i + 1)}</td>
+                  <td class="font-bold">${fmtVisa(r.visaType)}</td>
+                  <td class="text-center">${fmtNum(r.inCount)}</td>
+                  <td class="text-center">${fmtNum(r.outCount)}</td>
+                  <td class="text-center font-bold">${fmtNum(r.total)}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
 
           <div class="footer">
-            <p>CONFIDENTIAL IMMIGRATION SYSTEMS • FOR AUTHENTICATED INTERNAL USE ONLY</p>
+            <p>${isMM ? 'လူဝင်မှုကြီးကြပ်ရေး ဝန်ကြီးဌာန • ရုံးသုံး လျှို့ဝှက် စာရွက်စာတမ်း' : 'CONFIDENTIAL IMMIGRATION SYSTEMS • FOR AUTHENTICATED INTERNAL USE ONLY'}</p>
           </div>
         </div>
       </body>
@@ -1199,56 +1219,64 @@ const StillInAnalytics = ({
   };
 
   const generateStillInAnalysis = (title: string, type: keyof MovementData) => {
+    const isMM = siaLanguage === 'MM';
     const analysis: Record<string, { label: string; M: number; F: number; T: number }> = {};
     filteredStillInList.forEach(m => {
-      const val = (m[type] as string) || 'Unknown';
-      if (!analysis[val]) analysis[val] = { label: val, M: 0, F: 0, T: 0 };
-      if (m.gender === 'M') analysis[val].M++;
-      else if (m.gender === 'F') analysis[val].F++;
-      analysis[val].T++;
+      const rawVal = (m[type] as string) || 'Unknown';
+      const label = type === 'nat' ? fmtCountry(rawVal) : (type === 'visa' ? fmtVisa(rawVal) : rawVal);
+      if (!analysis[label]) analysis[label] = { label, M: 0, F: 0, T: 0 };
+      if (m.gender === 'M') analysis[label].M++;
+      else if (m.gender === 'F') analysis[label].F++;
+      analysis[label].T++;
     });
 
     const sorted = Object.values(analysis).sort((a, b) => b.T - a.T);
     const total = sorted.reduce((acc, curr) => ({ M: acc.M + curr.M, F: acc.F + curr.F, T: acc.T + curr.T }), { M: 0, F: 0, T: 0 });
 
+    const displayTitle = type === 'nat' 
+      ? (isMM ? '၁။ နိုင်ငံအလိုက် နေထိုင်သူများ ခွဲခြားမှု' : title)
+      : type === 'visa' 
+      ? (isMM ? '၂။ ဗီဇာအမျိုးအစားအလိုက် ခွဲခြားမှု' : title)
+      : (isMM ? '၃။ လက်ရှိနေထိုင်ရာ လိပ်စာအလိုက် ခွဲခြားမှု' : title);
+
     if (sorted.length === 0) {
       return (
         <div className="card bg-white border border-slate-100 p-6 rounded-2xl shadow-sm text-center">
-          <p className="text-xs font-black uppercase text-gray-400 mb-2 tracking-widest border-b pb-2">{title}</p>
-          <p className="text-[11px] font-bold text-slate-400 italic py-4">No records in selected range.</p>
+          <p className="text-xs font-black uppercase text-gray-400 mb-2 tracking-widest border-b pb-2">{displayTitle}</p>
+          <p className="text-[11px] font-bold text-slate-400 italic py-4">{isMM ? 'ရွေးချယ်ထားသော ရက်စွဲတွင် မှတ်တမ်းမရှိပါ။' : 'No records in selected range.'}</p>
         </div>
       );
     }
 
     return (
       <div className="card">
-        <h4 className="text-xs font-black uppercase text-gray-500 mb-4 tracking-widest border-b pb-2">{title}</h4>
+        <h4 className="text-xs font-black uppercase text-gray-500 mb-4 tracking-widest border-b pb-2">{displayTitle}</h4>
         <div className="overflow-x-auto border border-black rounded bg-white">
           <table className="w-full text-xs text-left">
             <thead>
               <tr className="bg-gray-50 border-b border-black">
-                <th className="p-2">Category</th>
-                <th className="w-12 p-2 text-center">M</th>
-                <th className="w-12 p-2 text-center">F</th>
-                <th className="w-12 p-2 text-center">Total</th>
+                <th className="p-2">{isMM ? 'အမျိုးအစား / နိုင်ငံ' : 'Category'}</th>
+                <th className="w-12 p-2 text-center">{isMM ? 'ကျား' : 'M'}</th>
+                <th className="w-12 p-2 text-center">{isMM ? 'မ' : 'F'}</th>
+                <th className="w-12 p-2 text-center">{isMM ? 'စုစုပေါင်း' : 'Total'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {sorted.map((s, idx) => (
                 <tr key={idx} className="hover:bg-gray-50">
                    <td className="p-2 font-bold truncate max-w-[150px]">{s.label}</td>
-                   <td className="p-2 text-center">{s.M}</td>
-                   <td className="p-2 text-center">{s.F}</td>
-                   <td className="p-2 text-center font-black">{s.T}</td>
+                   <td className="p-2 text-center">{fmtNum(s.M)}</td>
+                   <td className="p-2 text-center">{fmtNum(s.F)}</td>
+                   <td className="p-2 text-center font-black">{fmtNum(s.T)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot className="bg-gray-900 text-white font-black">
                <tr>
-                 <td className="p-2">TOTAL</td>
-                 <td className="p-2 text-center">{total.M}</td>
-                 <td className="p-2 text-center">{total.F}</td>
-                 <td className="p-2 text-center">{total.T}</td>
+                 <td className="p-2">{isMM ? 'စုစုပေါင်း (TOTAL)' : 'TOTAL'}</td>
+                 <td className="p-2 text-center">{fmtNum(total.M)}</td>
+                 <td className="p-2 text-center">{fmtNum(total.F)}</td>
+                 <td className="p-2 text-center">{fmtNum(total.T)}</td>
                </tr>
             </tfoot>
           </table>
@@ -1256,6 +1284,8 @@ const StillInAnalytics = ({
       </div>
     );
   };
+
+  const isSiaMM = siaLanguage === 'MM';
 
   return (
     <div className="max-w-[1600px] mx-auto py-4 sm:py-8 px-2 sm:px-4 space-y-4 sm:space-y-8">
@@ -1267,39 +1297,53 @@ const StillInAnalytics = ({
                 <Activity size={24} className="sm:w-7 sm:h-7" />
              </div>
              <div>
-                <h2 className="text-lg sm:text-2xl font-black text-gray-800 uppercase tracking-tight">STATISTICAL INVESTIGATION ANALYSIS (SIA) - MYEIK</h2>
-                <p className="text-gray-400 text-[10px] sm:text-xs font-bold font-mono uppercase">Immigration Intelligence & Traffic Flow (Myeik)</p>
+                <h2 className="text-lg sm:text-2xl font-black text-gray-800 uppercase tracking-tight font-pyidaungsu">
+                  {isSiaMM 
+                    ? 'အထူးစုံစမ်းစစ်ဆေးရေးနှင့် စာရင်းအင်း အစီရင်ခံစာ (SIA) • မြိတ်မြို့နယ်' 
+                    : 'STATISTICAL INVESTIGATION ANALYSIS (SIA) - MYEIK'}
+                </h2>
+                <p className="text-gray-400 text-[10px] sm:text-xs font-bold font-mono uppercase">
+                  {isSiaMM ? 'လူဝင်မှုကြီးကြပ်ရေးဆိုင်ရာ နိုင်ငံခြားသား ဝင်/ထွက် သွားလာမှု ကိန်းဂဏန်းများ' : 'Immigration Intelligence & Traffic Flow (Myeik)'}
+                </p>
              </div>
           </div>
           
           <div className="flex items-center justify-between sm:justify-center gap-3 sm:gap-6 bg-gray-50 px-4 py-2.5 sm:px-6 sm:py-3 rounded-2xl border border-gray-100 w-full md:w-auto">
              <div className="text-center">
-                <p className="text-[9px] sm:text-[10px] font-black text-gray-400 uppercase">MALE STILL IN</p>
-                <p className="text-lg sm:text-xl font-black text-blue-600">{filteredStillInList.filter(m => m.gender === 'M').length}</p>
+                <p className="text-[9px] sm:text-[10px] font-black text-gray-400 uppercase">{isSiaMM ? 'ကျား (နေထိုင်ဆဲ)' : 'MALE STILL IN'}</p>
+                <p className="text-lg sm:text-xl font-black text-blue-600 font-mono">
+                  {fmtNum(filteredStillInList.filter(m => m.gender === 'M').length)}
+                </p>
              </div>
              <div className="h-8 w-px bg-gray-200" />
              <div className="text-center">
-                <p className="text-[9px] sm:text-[10px] font-black text-gray-400 uppercase">FEMALE STILL IN</p>
-                <p className="text-lg sm:text-xl font-black text-pink-600">{filteredStillInList.filter(m => m.gender === 'F').length}</p>
+                <p className="text-[9px] sm:text-[10px] font-black text-gray-400 uppercase">{isSiaMM ? 'မ (နေထိုင်ဆဲ)' : 'FEMALE STILL IN'}</p>
+                <p className="text-lg sm:text-xl font-black text-pink-600 font-mono">
+                  {fmtNum(filteredStillInList.filter(m => m.gender === 'F').length)}
+                </p>
              </div>
              <div className="h-8 w-px bg-gray-200" />
              <div className="text-center">
-                <p className="text-[9px] sm:text-[10px] font-black text-gray-400 uppercase">TOTAL STILL IN</p>
-                <p className="text-xl sm:text-2xl font-black text-indigo-700">{filteredStillInList.length}</p>
+                <p className="text-[9px] sm:text-[10px] font-black text-gray-400 uppercase">{isSiaMM ? 'စုစုပေါင်း နေထိုင်ဆဲ' : 'TOTAL STILL IN'}</p>
+                <p className="text-xl sm:text-2xl font-black text-indigo-700 font-mono">
+                  {fmtNum(filteredStillInList.length)}
+                </p>
              </div>
           </div>
         </div>
       </div>
 
-      {/* Dynamic Date Range Filter and Section Tabs */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4 p-3.5 sm:p-4 rounded-2xl bg-slate-50 border border-slate-200/80 shadow-inner no-print">
+      {/* SIA TAB CONTROL TOOLBAR (Date Range + Language Toggle + Burmese Digits Toggle) */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4 p-3.5 sm:p-4 rounded-2xl bg-slate-100/90 border border-slate-300/80 shadow-xs no-print">
         <div className="flex flex-wrap items-center gap-2.5 sm:gap-4">
           <div className="flex items-center gap-2">
             <Calendar size={16} className="text-indigo-600 shrink-0" />
-            <span className="text-[11px] sm:text-xs font-black uppercase text-slate-500 tracking-wider">Date Range Filter:</span>
+            <span className="text-[11px] sm:text-xs font-black uppercase text-slate-600 tracking-wider">
+              {isSiaMM ? 'စစ်ဆေးမည့် ရက်စွဲ:' : 'Date Range Filter:'}
+            </span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">From:</span>
+            <span className="text-[10px] font-bold text-slate-500 uppercase">{isSiaMM ? 'မှ:' : 'From:'}</span>
             <input
               type="date"
               value={startDate}
@@ -1308,7 +1352,7 @@ const StillInAnalytics = ({
             />
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">To:</span>
+            <span className="text-[10px] font-bold text-slate-500 uppercase">{isSiaMM ? 'ထိ:' : 'To:'}</span>
             <input
               type="date"
               value={endDate}
@@ -1319,15 +1363,45 @@ const StillInAnalytics = ({
           {(startDate || endDate) && (
             <button
               onClick={() => { setStartDate(''); setEndDate(''); }}
-              className="text-[10px] bg-slate-200 text-slate-700 hover:bg-slate-300 font-bold uppercase px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg transition-all"
+              className="text-[10px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold uppercase px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg transition-all"
             >
-              Clear Filter
+              {isSiaMM ? 'ရက်စွဲဖျက်မည်' : 'Clear Filter'}
             </button>
           )}
+
+          <div className="h-6 w-px bg-slate-300 hidden sm:block mx-1" />
+
+          {/* LANGUAGE TOGGLE CONTROL */}
+          <button
+            type="button"
+            onClick={() => setSiaLanguage(prev => prev === 'EN' ? 'MM' : 'EN')}
+            className={`px-3 py-1.5 text-xs font-black rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95 ${
+              siaLanguage === 'MM'
+                ? 'bg-emerald-700 text-white border-emerald-600 hover:bg-emerald-800'
+                : 'bg-indigo-700 text-white border-indigo-600 hover:bg-indigo-800'
+            }`}
+            title="SIA Report Language Toggle (English / Burmese Pyidaungsu)"
+          >
+            <span>🌐 Language: {siaLanguage === 'MM' ? 'မြန်မာ (MM)' : 'English (EN)'}</span>
+          </button>
+
+          {/* BURMESE DIGITS TOGGLE CONTROL */}
+          <button
+            type="button"
+            onClick={() => setUseBurmeseDigits(prev => !prev)}
+            className={`px-3 py-1.5 text-xs font-black rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95 ${
+              useBurmeseDigits
+                ? 'bg-amber-600 text-white border-amber-500 hover:bg-amber-700'
+                : 'bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-800'
+            }`}
+            title="Toggle Digits Format (English 123 / Burmese ၁၂၃)"
+          >
+            <span>ဂဏန်း: {useBurmeseDigits ? '၁,၂,၃ (Burmese)' : '1,2,3 (English)'}</span>
+          </button>
         </div>
 
         {/* Section selectors */}
-        <div className="grid grid-cols-2 w-full sm:w-auto bg-slate-200 p-1 rounded-xl border border-slate-300/60 self-start lg:self-center">
+        <div className="grid grid-cols-2 w-full sm:w-auto bg-slate-200/90 p-1 rounded-xl border border-slate-300/80 self-start lg:self-center">
           <button
             onClick={() => setSubTab('analysis')}
             className={`px-3 sm:px-4 py-1.5 rounded-lg text-[11px] sm:text-xs font-black uppercase tracking-tight transition-all text-center ${
@@ -1336,7 +1410,7 @@ const StillInAnalytics = ({
                 : 'text-slate-600 hover:text-slate-800'
             }`}
           >
-            Still In Analysis
+            {isSiaMM ? 'နေထိုင်သူများ စာရင်းအင်း' : 'Still In Analysis'}
           </button>
           <button
             onClick={() => setSubTab('reports')}
@@ -1346,7 +1420,7 @@ const StillInAnalytics = ({
                 : 'text-slate-600 hover:text-slate-800'
             }`}
           >
-            Reports Dashboard
+            {isSiaMM ? 'အစီရင်ခံစာများ (Reports)' : 'Reports Dashboard'}
           </button>
         </div>
       </div>
@@ -1630,8 +1704,12 @@ const StillInAnalytics = ({
             <div className="card shadow-md border border-slate-200 bg-white p-4 sm:p-6">
               <div className="border-b pb-3 sm:pb-4 mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div>
-                  <h4 className="text-xs sm:text-sm font-black text-slate-800 uppercase tracking-tight">1. Nationality Inflow & Outflow</h4>
-                  <p className="text-[10px] text-slate-500 font-bold mt-0.5">Calculated entry/exit trends per country</p>
+                  <h4 className="text-xs sm:text-sm font-black text-slate-800 uppercase tracking-tight">
+                    {isSiaMM ? '၁။ နိုင်ငံအလိုက် ဝင်ရောက်/ထွက်ခွာမှု စာရင်းအင်း' : '1. Nationality Inflow & Outflow'}
+                  </h4>
+                  <p className="text-[10px] text-slate-500 font-bold mt-0.5">
+                    {isSiaMM ? 'နိုင်ငံအလိုက် ဝင်ရောက်/ထွက်ခွာသူ ဦးရေ ခွဲခြားတွက်ချက်မှု' : 'Calculated entry/exit trends per country'}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -1649,39 +1727,39 @@ const StillInAnalytics = ({
                     <Printer size={10} /> Print
                   </button>
                   <span className="text-[10px] bg-slate-100 border border-slate-200 text-slate-700 font-black px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-full shrink-0">
-                    {nationalityReportList.length} Countries
+                    {fmtNum(nationalityReportList.length)} {isSiaMM ? 'နိုင်ငံ' : 'Countries'}
                   </span>
                 </div>
               </div>
 
               {nationalityReportList.length === 0 ? (
                 <div className="text-center py-12 text-slate-400 font-bold text-xs italic">
-                  No records matching selected date range filter.
+                  {isSiaMM ? 'ရွေးချယ်ထားသော ရက်စွဲတွင် မှတ်တမ်းမရှိပါ။' : 'No records matching selected date range filter.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto border border-slate-100 rounded-xl">
                   <table className="w-full text-xs text-left">
                     <thead className="bg-slate-50 border-b border-slate-100">
                       <tr className="uppercase text-[9px] text-slate-500 font-black">
-                        <th className="p-2 sm:p-3 w-10 sm:w-12 text-center">No.</th>
-                        <th className="p-2 sm:p-3">Nationality</th>
-                        <th className="p-2 sm:p-3 text-center">Inbound (IN)</th>
-                        <th className="p-2 sm:p-3 text-center">Outbound (OUT)</th>
-                        <th className="p-2 sm:p-3 text-center">Net Staying</th>
-                        <th className="p-2 sm:p-3 text-center">Total</th>
+                        <th className="p-2 sm:p-3 w-10 sm:w-12 text-center">{isSiaMM ? 'စဉ်' : 'No.'}</th>
+                        <th className="p-2 sm:p-3">{isSiaMM ? 'နိုင်ငံအမည် / နိုင်ငံသား' : 'Nationality'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'ဝင်ရောက်သူ (IN)' : 'Inbound (IN)'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'ထွက်ခွာသူ (OUT)' : 'Outbound (OUT)'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'နေထိုင်ဆဲ (Net)' : 'Net Staying'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'စုစုပေါင်း' : 'Total'}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white font-bold">
                       {nationalityReportList.map((r, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="p-2 sm:p-3 text-center text-slate-400">{idx + 1}</td>
-                          <td className="p-2 sm:p-3 text-slate-900 font-extrabold">{r.nationality}</td>
-                          <td className="p-2 sm:p-3 text-center text-emerald-700 bg-emerald-50/10">{r.inCount}</td>
-                          <td className="p-2 sm:p-3 text-center text-orange-700 bg-orange-50/10">{r.outCount}</td>
+                          <td className="p-2 sm:p-3 text-center text-slate-400">{fmtNum(idx + 1)}</td>
+                          <td className="p-2 sm:p-3 text-slate-900 font-extrabold">{fmtCountry(r.nationality)}</td>
+                          <td className="p-2 sm:p-3 text-center text-emerald-700 bg-emerald-50/10">{fmtNum(r.inCount)}</td>
+                          <td className="p-2 sm:p-3 text-center text-orange-700 bg-orange-50/10">{fmtNum(r.outCount)}</td>
                           <td className={`p-2 sm:p-3 text-center text-xs font-black ${r.net >= 0 ? 'text-emerald-800' : 'text-red-700'}`}>
-                            {r.net > 0 ? `+${r.net}` : r.net}
+                            {r.net > 0 ? `+${fmtNum(r.net)}` : fmtNum(r.net)}
                           </td>
-                          <td className="p-2 sm:p-3 text-center text-indigo-900 font-black bg-indigo-50/10">{r.total}</td>
+                          <td className="p-2 sm:p-3 text-center text-indigo-900 font-black bg-indigo-50/10">{fmtNum(r.total)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1694,8 +1772,12 @@ const StillInAnalytics = ({
             <div className="card shadow-md border border-slate-200 bg-white p-4 sm:p-6">
               <div className="border-b pb-3 sm:pb-4 mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div>
-                  <h4 className="text-xs sm:text-sm font-black text-slate-800 uppercase tracking-tight">2. Visa Type Distribution</h4>
-                  <p className="text-[10px] text-slate-500 font-bold mt-0.5">Categorization of visitor entry types</p>
+                  <h4 className="text-xs sm:text-sm font-black text-slate-800 uppercase tracking-tight">
+                    {isSiaMM ? '၂။ ဗီဇာ အမျိုးအစားအလိုက် ခွဲခြားမှု စာရင်းအင်း' : '2. Visa Type Distribution'}
+                  </h4>
+                  <p className="text-[10px] text-slate-500 font-bold mt-0.5">
+                    {isSiaMM ? 'ဗီဇာအမျိုးအစားအလိုက် ခွဲခြားတွက်ချက်မှု' : 'Categorization of visitor entry types'}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -1713,35 +1795,35 @@ const StillInAnalytics = ({
                     <Printer size={10} /> Print
                   </button>
                   <span className="text-[10px] bg-slate-100 border border-slate-200 text-slate-700 font-black px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-full shrink-0">
-                    {visaReportList.length} Categories
+                    {fmtNum(visaReportList.length)} {isSiaMM ? 'အမျိုးအစား' : 'Categories'}
                   </span>
                 </div>
               </div>
 
               {visaReportList.length === 0 ? (
                 <div className="text-center py-12 text-slate-400 font-bold text-xs italic">
-                  No records matching selected date range filter.
+                  {isSiaMM ? 'ရွေးချယ်ထားသော ရက်စွဲတွင် မှတ်တမ်းမရှိပါ။' : 'No records matching selected date range filter.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto border border-slate-100 rounded-xl">
                   <table className="w-full text-xs text-left">
                     <thead className="bg-slate-50 border-b border-slate-100">
                       <tr className="uppercase text-[9px] text-slate-500 font-black">
-                        <th className="p-2 sm:p-3 w-10 sm:w-12 text-center">No.</th>
-                        <th className="p-2 sm:p-3">Visa Type</th>
-                        <th className="p-2 sm:p-3 text-center">Inbound (IN)</th>
-                        <th className="p-2 sm:p-3 text-center">Outbound (OUT)</th>
-                        <th className="p-2 sm:p-3 text-center">Total Movements</th>
+                        <th className="p-2 sm:p-3 w-10 sm:w-12 text-center">{isSiaMM ? 'စဉ်' : 'No.'}</th>
+                        <th className="p-2 sm:p-3">{isSiaMM ? 'ဗီဇာ အမျိုးအစား' : 'Visa Type'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'ဝင်ရောက်သူ (IN)' : 'Inbound (IN)'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'ထွက်ခွာသူ (OUT)' : 'Outbound (OUT)'}</th>
+                        <th className="p-2 sm:p-3 text-center">{isSiaMM ? 'စုစုပေါင်း' : 'Total Movements'}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white font-bold">
                       {visaReportList.map((r, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="p-2 sm:p-3 text-center text-slate-400">{idx + 1}</td>
-                          <td className="p-2 sm:p-3 text-slate-900 font-extrabold">{r.visaType}</td>
-                          <td className="p-2 sm:p-3 text-center text-emerald-700">{r.inCount}</td>
-                          <td className="p-2 sm:p-3 text-center text-orange-700">{r.outCount}</td>
-                          <td className="p-2 sm:p-3 text-center text-indigo-900 font-black bg-indigo-50/10">{r.total}</td>
+                          <td className="p-2 sm:p-3 text-center text-slate-400">{fmtNum(idx + 1)}</td>
+                          <td className="p-2 sm:p-3 text-slate-900 font-extrabold">{fmtVisa(r.visaType)}</td>
+                          <td className="p-2 sm:p-3 text-center text-emerald-700">{fmtNum(r.inCount)}</td>
+                          <td className="p-2 sm:p-3 text-center text-orange-700">{fmtNum(r.outCount)}</td>
+                          <td className="p-2 sm:p-3 text-center text-indigo-900 font-black bg-indigo-50/10">{fmtNum(r.total)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -2688,6 +2770,71 @@ export const formatDateTimeToDDMMYYYY = (timestampStr: string | undefined | null
 const toBurmeseDigits = (numStr: string | number) => {
   const burmeseDigits = ['၀', '၁', '၂', '၃', '၄', '၅', '၆', '၇', '၈', '၉'];
   return String(numStr).replace(/[0-9]/g, (match) => burmeseDigits[parseInt(match)]);
+};
+
+export const getBurmeseCountryName = (nat?: string): string => {
+  if (!nat) return '-';
+  const clean = String(nat).trim().toUpperCase();
+  const map: Record<string, string> = {
+    'THAI': 'ထိုင်း',
+    'THAILAND': 'ထိုင်း',
+    'CHINESE': 'တရုတ်',
+    'CHINA': 'တရုတ်',
+    'INDIAN': 'အိန္ဒိယ',
+    'INDIA': 'အိန္ဒိယ',
+    'MALAYSIA': 'မလေးရှား',
+    'MALAYSIAN': 'မလေးရှား',
+    'SINGAPORE': 'စင်ကာပူ',
+    'SINGAPOREAN': 'စင်ကာပူ',
+    'VIETNAM': 'ဗီယက်နမ်',
+    'VIETNAMESE': 'ဗီယက်နမ်',
+    'INDONESIA': 'အင်ဒိုနီးရှား',
+    'INDONESIAN': 'အင်ဒိုနီးရှား',
+    'AMERICAN': 'အမေရိကန်',
+    'USA': 'အမေရိကန်',
+    'UNITED STATES': 'အမေရိကန်',
+    'BRITISH': 'ဗြိတိန်',
+    'UK': 'ဗြိတိန်',
+    'UNITED KINGDOM': 'ဗြိတိန်',
+    'JAPAN': 'ဂျပန်',
+    'JAPANESE': 'ဂျပန်',
+    'KOREA': 'ကိုရီးယား',
+    'KOREAN': 'ကိုရီးယား',
+    'SOUTH KOREA': 'တောင်ကိုရီးယား',
+    'RUSSIA': 'ရုရှား',
+    'RUSSIAN': 'ရုရှား',
+    'CAMBODIA': 'ကမ္ဘောဒီးယား',
+    'CAMBODIAN': 'ကမ္ဘောဒီးယား',
+    'LAOS': 'လာအို',
+    'LAOTIAN': 'လာအို',
+    'PHILIPPINES': 'ဖိလစ်ပိုင်',
+    'FILIPINO': 'ဖိလစ်ပိုင်',
+    'BANGLADESH': 'ဘင်္ဂလားဒေ့ရှ်',
+    'BANGLADESHI': 'ဘင်္ဂလားဒေ့ရှ်',
+    'AUSTRALIA': 'ဩစတြေးလျ',
+    'AUSTRALIAN': 'ဩစတြေးလျ',
+    'GERMANY': 'ဂျာမနီ',
+    'GERMAN': 'ဂျာမနီ',
+    'FRANCE': 'ပြင်သစ်',
+    'FRENCH': 'ပြင်သစ်',
+    'MYANMAR': 'မြန်မာ',
+    'BURMESE': 'မြန်မာ'
+  };
+  return map[clean] || nat;
+};
+
+export const getBurmeseVisaType = (visa?: string): string => {
+  if (!visa) return '-';
+  const clean = String(visa).trim().toUpperCase();
+  if (clean.includes('BUSINESS')) return 'စီးပွားရေး ဗီဇာ (Business)';
+  if (clean.includes('TOURIST')) return 'အလည်အပတ် ဗီဇာ (Tourist)';
+  if (clean.includes('SOCIAL')) return 'လူမှုရေး ဗီဇာ (Social)';
+  if (clean.includes('OFFICIAL') || clean.includes('DIPLOMATIC')) return 'သံတမန်/အရာရှိ ဗီဇာ (Official/Diplomatic)';
+  if (clean.includes('WORK') || clean.includes('EMPLOY')) return 'အလုပ်သမား ဗီဇာ (Work)';
+  if (clean.includes('TRANSIT')) return 'ဖြတ်သန်းခွင့် ဗီဇာ (Transit)';
+  if (clean.includes('ARRIVAL')) return 'ဆိုက်ရောက် ဗီဇာ (Visa on Arrival)';
+  if (clean.includes('EXEMPT')) return 'ဗီဇာ ကင်းလွတ်ခွင့် (Exemption)';
+  return visa;
 };
 
 const toBurmeseDate = (dateStr: string) => {
@@ -6050,11 +6197,7 @@ export default function App() {
             showToast("📱 အခြားစက်မှ အချက်အလက်သစ်များ ရောက်ရှိပါပြီ (Auto-Synced from Server)");
           }
         } else {
-          if (updatedAny || fetchedAny) {
-            showToast(" Cloud မှ အချက်အလက်သစ်များ အောင်မြင်စွာ ရယူပြီးပါပြီ");
-          } else {
-            showToast(" Cloud အချက်အလက်နှင့် လက်ရှိ Local အချက်အလက်များ တူညီနေပါသည်");
-          }
+          showToast(`✅ Cloud Database မှ စာရင်း [${records.length}] ခုအား အောင်မြင်စွာ ရယူပြီးပါပြီ (Total DB Records Loaded)`);
         }
       } catch (err: any) {
         if (!silent) {
@@ -6366,6 +6509,7 @@ export default function App() {
     const [editTarget, setEditTarget] = useState<ImmRecord | null>(null);
     const [mobileDetailRecord, setMobileDetailRecord] = useState<ImmRecord | null>(null);
     const [globalDateRange, setGlobalDateRange] = useState({ from: '', to: '' });
+    const [showFFEMaintenancePlan, setShowFFEMaintenancePlan] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [analyzerTarget, setAnalyzerTarget] = useState<string | null>(null);
     const [movementFilter, setMovementFilter] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
@@ -6703,7 +6847,7 @@ export default function App() {
       } finally {
         setIsDBCardLoaded(true);
         setIsInitialSyncing(false);
-        setTimeout(() => handleFetchDataFromCloud(false, true).catch(() => {}), 200);
+        setTimeout(() => handleFetchDataFromCloud(true, false).catch(() => {}), 200);
       }
     };
 
@@ -7675,6 +7819,23 @@ export default function App() {
                 <span>Quota</span>
               </span>
             )}
+          </button>
+
+          {/* NOTICEABLE CLOUD DATA PULL BUTTON */}
+          <button
+            onClick={() => {
+              showToast("🔄 Cloud Database မှ အချက်အလက်များ အသစ်စတင်ဆွဲယူနေပါသည်...");
+              handleFetchDataFromCloud(true, false);
+            }}
+            disabled={downloadProgress?.isDownloading}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-xl text-[10px] font-black tracking-wide border transition-all cursor-pointer shadow-xs hover:scale-105 active:scale-95 bg-cyan-600/30 hover:bg-cyan-500/40 border-cyan-400/40 text-cyan-200"
+            title="Cloud Database မှ အချက်အလက်သစ်များ အပြည့်အဝ ပြန်လည်ဆွဲယူရန် (Force Full Cloud Data Sync)"
+          >
+            <RefreshCw size={12} className={`text-cyan-300 ${downloadProgress?.isDownloading ? 'animate-spin' : ''}`} />
+            <span>Cloud Data Pull</span>
+            <span className="bg-cyan-950/80 text-cyan-200 px-1.5 py-0.2 rounded-md font-mono text-[9px] border border-cyan-500/30">
+              {records.length}
+            </span>
           </button>
 
         {/* RIGHT ACTION CONTROLS & PROFILE */}
@@ -8777,8 +8938,115 @@ export default function App() {
             </div>
           </div>
         )}
-        <div className="card p-3 sm:p-5">
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 w-full no-print border-b pb-3">
+            {/* NOTICEABLE DATA PULL & SYSTEM STATUS BANNER */}
+            <div className="mb-4 p-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl shadow-md border border-indigo-500/30 no-print">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center gap-0 justify-center text-cyan-300 shrink-0 shadow-inner">
+                    <Database size={20} className="animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-black text-sm uppercase tracking-wide text-cyan-200">Official Database Status</span>
+                      <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                        {isOnline ? "Cloud Online Sync" : "Offline Storage Active"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 font-bold mt-0.5">
+                      စုစုပေါင်း သွင်းပြီးသော FFE/Flight စာရင်း: <span className="font-mono text-cyan-300 font-extrabold text-sm">{records.length}</span> ခု • ယာယီဖြည့်စွက်စာရင်း (Manifest): <span className="font-mono text-amber-300 font-extrabold text-sm">{tempRecords.length}</span> ခု
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap self-end md:self-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      showToast("🔄 Cloud Database မှ အချက်အလက်များ အပြည့်အဝ အသစ်ပြန်လည်ဆွဲယူနေပါသည်...");
+                      handleFetchDataFromCloud(true, false);
+                    }}
+                    className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-black text-xs rounded-xl shadow-md transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+                    title="Cloud မှ စာရင်းအပြည့်အဝ အသစ်ပြန်ဆွဲမည်"
+                  >
+                    <RefreshCw size={13} className={downloadProgress?.isDownloading ? 'animate-spin' : ''} />
+                    <span>Pull Cloud Data</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowFFEMaintenancePlan(!showFFEMaintenancePlan)}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-black text-xs rounded-xl border border-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Layers size={13} className="text-amber-400" />
+                    <span>{showFFEMaintenancePlan ? 'Hide Maintenance Plan' : 'Data Maintenance Plan'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* EXPANDABLE MAINTENANCE & RETENTION PLAN */}
+              {showFFEMaintenancePlan && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-4 pt-4 border-t border-slate-800 text-xs text-slate-300 space-y-3">
+                  <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl text-amber-200 font-bold leading-relaxed">
+                    <span className="font-black text-amber-400 uppercase block mb-1">🔍 Why does FFE data appear reduced or filtered? (အဘယ်ကြောင့် စာရင်းလျော့နည်းသွားသကဲ့သို့ ထင်မြင်ရသနည်း)</span>
+                    <ul className="list-disc pl-5 space-y-1 text-[11px] font-medium text-amber-100">
+                      <li><strong>Active Date Range / Search Filter:</strong> ဇယားအောက်တွင် Date Filter သို့မဟုတ် ရှာဖွေမှု ပြုလုပ်ထားပါက သတ်မှတ်ရက်စွဲပြင်ပ စာရင်းများ ခေတ္တကွယ်နေတတ်ပါသည် (Hidden by Filter)။</li>
+                      <li><strong>Manifest (Temp) to Official FFE Conversion:</strong> ယာယီဖြည့်စွက်စာရင်း (Temp Entry) မှ တရားဝင် FFE စာရင်းသို့ အတည်ပြုလိုက်ပါက Temp စာရင်းမှ ဖယ်ရှားပြီး Official Records စာရင်းသို့ ပေါင်းစည်းသွားပါသည် (Zero Data Loss)။</li>
+                      <li><strong>Multi-Device Sync Merging:</strong> အခြားစက်များမှ ထည့်သွင်းသော စာရင်းများအား Duplicate မဖြစ်စေရန် Composite Keys (<code className="text-cyan-300">id + passport + timestamp</code>) ဖြင့် စနစ်တကျ ပေါင်းစည်းပေးထားပါသည်။</li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800 space-y-2">
+                    <div className="font-black text-cyan-300 text-xs uppercase flex items-center gap-1.5">
+                      <CheckCircle2 size={14} className="text-emerald-400" />
+                      5-Point Long-Term Database Maintenance Plan (ရေရှည်ဒေတာ လုံခြုံမှု ထိန်းသိမ်းရေး အစီအစဉ်)
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-medium">
+                      <div className="p-2 bg-slate-800/60 rounded-lg border border-slate-700/50">
+                        <span className="font-extrabold text-white block">1. Force First-Load Pull Protocol</span>
+                        အက်ပ်စတင်ဖွင့်တိုင်း Cloud မှ စာရင်းအပြည့်အဝ (<code className="text-cyan-300">force = true</code>) ကို အလိုအလျောက် ဆွဲယူပြီး Local DB နှင့် ပေါင်းစည်းပါသည်။
+                      </div>
+                      <div className="p-2 bg-slate-800/60 rounded-lg border border-slate-700/50">
+                        <span className="font-extrabold text-white block">2. Dual Storage Fail-Safe</span>
+                        IndexedDB + LocalStorage နှစ်မျိုးလုံးတွင် သိမ်းဆည်းထားသဖြင့် မည်သည့်အခါမျှ အချက်အလက် မပျောက်ပျက်ပါ။
+                      </div>
+                      <div className="p-2 bg-slate-800/60 rounded-lg border border-slate-700/50">
+                        <span className="font-extrabold text-white block">3. Audit History Retention</span>
+                        အတည်ပြု ပြင်ဆင်မှုတိုင်းကို Dossier History နှင့် Activity Logs တွင် အမြဲတမ်း မှတ်တမ်းတင်ထားပါသည်။
+                      </div>
+                      <div className="p-2 bg-slate-800/60 rounded-lg border border-slate-700/50">
+                        <span className="font-extrabold text-white block">4. One-Click Historical Data Load</span>
+                        ခလုတ်တစ်ချက်နှိပ်ရုံဖြင့် လွန်ခဲ့သော စာရင်းဟောင်းများ အားလုံးကို Cloud မူရင်းအတိုင်း ပြန်လည် ဆွဲယူနိုင်ပါသည်။
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </div>
+
+            {/* ACTIVE FILTER WARNING BANNER */}
+            {(globalDateRange.from || globalDateRange.to || searchQuery) && (
+              <div className="mb-4 p-3 bg-amber-50 border-2 border-amber-300 rounded-xl flex items-center justify-between gap-3 text-amber-900 font-bold text-xs no-print">
+                <div className="flex items-center gap-2">
+                  <AlertCircle size={16} className="text-amber-600 shrink-0" />
+                  <span>
+                    ⚠️ Active Filter Alert: လက်ရှိတွင် စာရင်း <span className="font-black text-amber-950 font-mono text-sm">{filteredRecords.length}</span> ခု ပြသထားပါသည် (စုစုပေါင်း <span className="font-mono text-slate-700">{records.length}</span> ခုအနက်)။ Filter ကြောင့် အချို့သော စာရင်းများ ခေတ္တကွယ်နေနိုင်ပါသည်
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGlobalDateRange({ from: '', to: '' });
+                    setSearchQuery('');
+                  }}
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-black text-[11px] rounded-lg shadow-xs transition-all shrink-0 cursor-pointer"
+                >
+                  Clear Filters (စာရင်းအားလုံး ပြမည်)
+                </button>
+              </div>
+            )}
+
+            <div className="card p-3 sm:p-5">
+              <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 w-full no-print border-b pb-3">
                <div className="flex items-center gap-2.5">
                   <div className="bg-[#2C6CB0]/10 p-2 rounded-xl text-[#2C6CB0] border border-[#2C6CB0]/20 shrink-0">
                     <History size={20} />
@@ -8786,7 +9054,7 @@ export default function App() {
                   <div>
                     <h2 className="text-sm sm:text-base font-black uppercase text-slate-800 tracking-tight leading-tight">Main Flight Log History</h2>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 mt-0.5">
-                       <Activity size={10} className="text-emerald-500" /> Database: {records.length} total entries
+                       <Activity size={10} className="text-emerald-500" /> Database: {filteredRecords.length} showing / {records.length} total
                     </p>
                   </div>
                </div>
