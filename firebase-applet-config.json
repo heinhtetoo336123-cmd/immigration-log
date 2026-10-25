@@ -3,7 +3,7 @@
   "appId": "1:224760074381:web:2f95bda471b6f7a43492c4",
   "apiKey": "AIzaSyCnl9z3CNPYksrzHXvmR7O4YJbb_mCAk9M",
   "authDomain": "immi-log-sys.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-immigrationlogsy-00b0f03b-9029-4198-ab72-1ee145a6510c",
+  "firestoreDatabaseId": "(default)",
   "storageBucket": "immi-log-sys.firebasestorage.app",
   "messagingSenderId": "224760074381",
   "measurementId": "",

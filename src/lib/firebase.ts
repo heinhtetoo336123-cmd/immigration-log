@@ -4,7 +4,6 @@ import {
   doc, 
   setDoc, 
   getDoc,
-  getDocFromServer,
   onSnapshot, 
   collection, 
   getDocs,
@@ -24,7 +23,7 @@ export const firebaseConfig = {
 // Initialize Firebase App
 export const app = initializeApp(firebaseConfig);
 
-// Connect to default Firestore with getFirestore(app)
+// Clean Default Firestore Database Instance
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 
@@ -81,14 +80,8 @@ export const isOfflineOrNetworkError = (err: any): boolean => {
   const code = String(err?.code || '').toLowerCase();
   const msg = String(err?.message || err || '').toLowerCase();
   return (
-    code === 'unavailable' ||
     code.includes('offline') ||
-    code.includes('network') ||
-    code.includes('timeout') ||
     msg.includes('client is offline') ||
-    msg.includes('offline') ||
-    msg.includes('network-request-failed') ||
-    msg.includes('could not reach cloud firestore backend') ||
     msg.includes('failed to get document because the client is offline')
   );
 };
@@ -296,6 +289,9 @@ let cachedMetadata: { data: Record<string, string>; fetchedAt: number } | null =
 const METADATA_CACHE_TTL_MS = 15000; // 15 seconds cache
 
 export const getCloudMetadata = async (force: boolean = false): Promise<Record<string, string> | null> => {
+  if (force) {
+    isFirestoreUnavailable = false;
+  }
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return null;
   }
@@ -308,15 +304,15 @@ export const getCloudMetadata = async (force: boolean = false): Promise<Record<s
   try {
     await ensureAuthenticated();
     const metaRef = doc(db, 'appData', '_metadata');
-    const snapshot = await getDocFromServer(metaRef).catch(() => getDoc(metaRef));
-    if (snapshot.exists()) {
+    const snapshot = await getDoc(metaRef);
+    if (snapshot && snapshot.exists()) {
       const data = snapshot.data() as Record<string, string>;
       cachedMetadata = { data, fetchedAt: Date.now() };
       return data;
     }
     return null;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+    if (isOfflineOrNetworkError(err)) {
       isFirestoreUnavailable = true;
     }
     if (isQuotaError(err)) {
@@ -536,7 +532,7 @@ export const saveCollectionToFirestore = async (
     saveToLocalStorageFallback(collectionName, serverItems);
     return true;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+    if (isOfflineOrNetworkError(err)) {
       isFirestoreUnavailable = true;
       return true;
     }
@@ -559,26 +555,131 @@ export interface CloudStats {
   metadata?: Record<string, string>;
 }
 
-export const fetchCloudCollectionStats = async (): Promise<CloudStats | null> => {
+/**
+ * Universally extract records/items array from any Firestore document structure.
+ * Supports:
+ * - data.items
+ * - data.records, data.logs, data.data, data.list, data[collectionName]
+ * - documents structured as key-value dictionaries of records: { [id]: record }
+ * - sub-objects containing flight / movement / master records
+ */
+export const extractItemsFromFirestoreDoc = (data: any, collectionName?: string): any[] => {
+  if (!data || typeof data !== 'object') return [];
+
+  // 1. Direct array under known property keys
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.records)) return data.records;
+  if (Array.isArray(data.logs)) return data.logs;
+  if (Array.isArray(data.data)) return data.data;
+  if (Array.isArray(data.list)) return data.list;
+  if (collectionName && Array.isArray(data[collectionName])) return data[collectionName];
+
+  // 2. Scan all properties for any non-empty array
+  for (const [key, val] of Object.entries(data)) {
+    if (Array.isArray(val) && val.length > 0) {
+      return val;
+    }
+  }
+
+  // 3. Document storing records as key-value pairs / dictionary { [id]: record }
+  const systemKeys = new Set([
+    'totalCount', 'totalParts', 'isChunked', 'lastUpdated', 'updatedAt', 
+    'serverSyncedAt', 'collectionName', 'partIndex', 'id', 'name', 'type', 'status', '_metadata'
+  ]);
+  const candidateObjects: any[] = [];
+  for (const [key, val] of Object.entries(data)) {
+    if (!systemKeys.has(key) && val && typeof val === 'object' && !Array.isArray(val)) {
+      candidateObjects.push(val);
+    }
+  }
+  if (candidateObjects.length > 0) {
+    return candidateObjects;
+  }
+
+  return [];
+};
+
+/**
+ * Universally extract record count from any Firestore document structure.
+ * Accurately reads:
+ * - data.totalCount, data.count, data.total
+ * - array lengths for .items, .records, .logs, .data, etc.
+ * - total count across chunked parts if specified
+ */
+export const extractCountFromFirestoreDoc = (data: any, collectionName?: string): number => {
+  if (!data || typeof data !== 'object') return 0;
+
+  // 1. Explicit count properties
+  if (typeof data.totalCount === 'number' && !isNaN(data.totalCount) && data.totalCount >= 0) {
+    return data.totalCount;
+  }
+  if (typeof data.count === 'number' && !isNaN(data.count) && data.count >= 0) {
+    return data.count;
+  }
+  if (typeof data.total === 'number' && !isNaN(data.total) && data.total >= 0) {
+    return data.total;
+  }
+
+  // 2. Extracted items array length
+  const items = extractItemsFromFirestoreDoc(data, collectionName);
+  return items.length;
+};
+
+export const fetchCloudCollectionStats = async (force: boolean = false): Promise<CloudStats | null> => {
+  if (force) {
+    isFirestoreUnavailable = false;
+  }
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return null;
   }
   try {
-    const meta = await getCloudMetadata(false);
-    if (!meta) return null;
+    const cols = ['records', 'tempRecords', 'masterData', 'vehicleSummaries', 'dossierHistory', 'watchList'];
+    const counts: Record<string, number> = {};
 
-    return {
-      recordsCount: parseInt(meta['records_count'] || '0', 10),
-      tempRecordsCount: parseInt(meta['tempRecords_count'] || '0', 10),
-      masterDataCount: parseInt(meta['masterData_count'] || '0', 10),
-      vehicleSummariesCount: parseInt(meta['vehicleSummaries_count'] || '0', 10),
-      dossierHistoryCount: parseInt(meta['dossierHistory_count'] || '0', 10),
-      watchListCount: parseInt(meta['watchList_count'] || '0', 10),
-      metadata: meta,
-      lastUpdated: meta.records || new Date().toISOString()
+    // 1. Fetch direct collection documents on default database
+    await ensureAuthenticated();
+    const docPromises = cols.map(col => getDoc(doc(db, 'appData', col)).catch(() => null));
+    const docSnaps = await Promise.all(docPromises);
+
+    for (let idx = 0; idx < cols.length; idx++) {
+      const colName = cols[idx];
+      const snap = docSnaps[idx];
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        counts[colName] = extractCountFromFirestoreDoc(data, colName);
+      } else {
+        counts[colName] = 0;
+      }
+    }
+
+    // 2. Also check _metadata if available for secondary verification or timestamps
+    const meta = await getCloudMetadata(force).catch(() => null);
+    if (meta) {
+      for (const col of cols) {
+        const metaCountStr = meta[`${col}_count`];
+        if (metaCountStr !== undefined && metaCountStr !== null) {
+          const metaCount = parseInt(metaCountStr, 10);
+          if (!isNaN(metaCount) && metaCount > (counts[col] || 0)) {
+            counts[col] = metaCount;
+          }
+        }
+      }
+    }
+
+    const resultStats: CloudStats = {
+      recordsCount: counts['records'] || 0,
+      tempRecordsCount: counts['tempRecords'] || 0,
+      masterDataCount: counts['masterData'] || 0,
+      vehicleSummariesCount: counts['vehicleSummaries'] || 0,
+      dossierHistoryCount: counts['dossierHistory'] || 0,
+      watchListCount: counts['watchList'] || 0,
+      metadata: meta || {},
+      lastUpdated: meta?.records || new Date().toISOString()
     };
+
+    return resultStats;
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+    if (isOfflineOrNetworkError(err)) {
       isFirestoreUnavailable = true;
     }
     return null;
@@ -597,7 +698,7 @@ export const subscribeToFirestoreCollection = (
   return () => {};
 };
 
-// Single-document direct fetcher (no full collection scans)
+// Single-document direct fetcher supporting all document schemas and chunking
 export const fetchCollectionFromFirestore = async (collectionName: string): Promise<any[] | null> => {
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return getFromLocalStorageFallback(collectionName);
@@ -606,7 +707,7 @@ export const fetchCollectionFromFirestore = async (collectionName: string): Prom
     await ensureAuthenticated();
     
     const mainDocRef = doc(db, 'appData', collectionName);
-    const mainSnap = await getDocFromServer(mainDocRef).catch(() => getDoc(mainDocRef));
+    const mainSnap = await getDoc(mainDocRef);
     
     if (!mainSnap.exists()) {
       return getFromLocalStorageFallback(collectionName);
@@ -615,23 +716,28 @@ export const fetchCollectionFromFirestore = async (collectionName: string): Prom
     const mainData = mainSnap.data();
     if (!mainData) return getFromLocalStorageFallback(collectionName);
 
-    let allItems: any[] = Array.isArray(mainData.items) ? [...mainData.items] : [];
+    let allItems: any[] = extractItemsFromFirestoreDoc(mainData, collectionName);
 
-    // If chunked and totalParts > 1, fetch only existing chunk documents in parallel
+    // If chunked and totalParts > 1, fetch all chunk documents in parallel
     if (mainData.isChunked && typeof mainData.totalParts === 'number' && mainData.totalParts > 1) {
       const partPromises: Promise<any>[] = [];
-      for (let i = 1; i < mainData.totalParts; i++) {
+      for (let i = 0; i < mainData.totalParts; i++) {
         const partRef = doc(db, 'appData', `${collectionName}_part_${i}`);
-        partPromises.push(getDocFromServer(partRef).catch(() => getDoc(partRef)));
+        partPromises.push(getDoc(partRef).catch(() => null));
       }
       const partSnaps = await Promise.all(partPromises);
+      const chunkedItems: any[] = [];
       for (const pSnap of partSnaps) {
         if (pSnap && pSnap.exists()) {
           const pData = pSnap.data();
-          if (pData && Array.isArray(pData.items)) {
-            allItems = allItems.concat(pData.items);
+          const pItems = extractItemsFromFirestoreDoc(pData, collectionName);
+          if (pItems.length > 0) {
+            chunkedItems.push(...pItems);
           }
         }
+      }
+      if (chunkedItems.length > 0) {
+        allItems = chunkedItems;
       }
     }
 
@@ -643,7 +749,7 @@ export const fetchCollectionFromFirestore = async (collectionName: string): Prom
 
     return getFromLocalStorageFallback(collectionName);
   } catch (err: any) {
-    if (isOfflineOrNetworkError(err) || String(err).toLowerCase().includes('not found')) {
+    if (isOfflineOrNetworkError(err)) {
       isFirestoreUnavailable = true;
     }
     return getFromLocalStorageFallback(collectionName);
@@ -662,6 +768,10 @@ export const checkAndFetchUpdatedCollections = async (
   onProgress?: (percent: number, currentCollection: string) => void
 ): Promise<Record<string, any[]>> => {
   const results: Record<string, any[]> = {};
+
+  if (forceAll) {
+    isFirestoreUnavailable = false;
+  }
 
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     for (const col of collectionNames) {
@@ -695,8 +805,8 @@ export const checkAndFetchUpdatedCollections = async (
 
       const isRemoteNewerByMeta = remoteTime && (!localTime || new Date(remoteTime).getTime() > new Date(localTime).getTime());
 
-      // STRICT CHECK: Only query Firestore document if remote timestamp is strictly newer or forced
-      if (forceAll || isRemoteNewerByMeta || !localHash) {
+      // STRICT CHECK: Only query Firestore document if remote timestamp is strictly newer, forced, or missing metadata
+      if (forceAll || !cloudMeta || isRemoteNewerByMeta || !localHash) {
         const items = await fetchCollectionFromFirestore(col);
         if (Array.isArray(items) && items.length > 0) {
           results[col] = items;

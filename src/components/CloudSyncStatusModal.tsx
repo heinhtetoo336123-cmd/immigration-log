@@ -82,7 +82,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
     if (!isOnline) return;
     setIsLoadingStats(true);
     try {
-      const stats = await fetchCloudCollectionStats();
+      const stats = await fetchCloudCollectionStats(true);
       if (stats) setCloudStats(stats);
     } catch {
       // quiet catch
