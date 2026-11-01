@@ -52,22 +52,68 @@ interface IndividualSearchProps {
   isViewer?: boolean;
 }
 
+export const parseFlexibleDate = (dateStr: string | undefined | null): Date | null => {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  const clean = dateStr.trim();
+  if (!clean || clean === '-' || clean === 'N/A') return null;
+
+  // Case 1: Standard ISO (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss)
+  if (/^\d{4}-\d{2}-\d{2}/.test(clean)) {
+    const isoPart = clean.split('T')[0];
+    const parts = isoPart.split('-').map(Number);
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+      return new Date(parts[0], parts[1] - 1, parts[2]);
+    }
+  }
+
+  // Case 2: Slash, Dash, or Dot formatted dates e.g. "25/10/2026", "25-10-2026", "2026/10/25", "25.10.2026"
+  const datePart = clean.split(', ')[0].split(' ')[0];
+  const parts = datePart.split(/[\/\-\.]/).map(Number);
+  if (parts.length === 3 && !parts.some(isNaN)) {
+    let y = parts[2];
+    let m = parts[1] - 1;
+    let d = parts[0];
+
+    // If first part is a 4-digit year e.g. 2026/10/25
+    if (parts[0] > 1000) {
+      y = parts[0];
+      m = parts[1] - 1;
+      d = parts[2];
+    }
+
+    if (y >= 1900 && m >= 0 && m <= 11 && d >= 1 && d <= 31) {
+      return new Date(y, m, d);
+    }
+  }
+
+  // Fallback to Date.parse
+  const timestamp = Date.parse(clean);
+  if (!isNaN(timestamp)) {
+    const dt = new Date(timestamp);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+
+  return null;
+};
+
 const parseTimestamp = (str: string): number => {
   if (!str) return 0;
   try {
-    if (str.includes('T')) {
-      const p = Date.parse(str);
-      if (!isNaN(p)) return p;
+    const dt = parseFlexibleDate(str);
+    if (dt && !isNaN(dt.getTime())) {
+      const timeMatch = str.match(/(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?/i);
+      if (timeMatch) {
+        let hrs = parseInt(timeMatch[1], 10);
+        const mins = parseInt(timeMatch[2], 10) || 0;
+        const secs = parseInt(timeMatch[3], 10) || 0;
+        const ampm = timeMatch[4] ? timeMatch[4].toUpperCase() : null;
+        if (ampm === 'PM' && hrs < 12) hrs += 12;
+        if (ampm === 'AM' && hrs === 12) hrs = 0;
+        dt.setHours(hrs, mins, secs);
+      }
+      return dt.getTime();
     }
-    const nums = str.match(/\d+/g)?.map(Number);
-    if (!nums || nums.length < 3) return Date.parse(str) || 0;
-    let y = nums[2], m = nums[1] - 1, d = nums[0];
-    if (nums[0] > 1000) {
-      y = nums[0];
-      m = nums[1] - 1;
-      d = nums[2];
-    }
-    return new Date(y, m, d, nums[3] || 0, nums[4] || 0, nums[5] || 0).getTime();
+    return Date.parse(str) || 0;
   } catch {
     return 0;
   }
@@ -75,10 +121,12 @@ const parseTimestamp = (str: string): number => {
 
 const parseLogDateToKey = (timestamp: string) => {
   if (!timestamp) return null;
-  const parts = timestamp.split(', ')[0].split('/');
-  if (parts.length === 3) {
-    const [d, m, y] = parts;
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  const dt = parseFlexibleDate(timestamp);
+  if (dt) {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
   return null;
 };
@@ -87,7 +135,8 @@ const parseLogDateToKey = (timestamp: string) => {
 const getRemainingDaysNum = (dateStr: string): number => {
   if (!dateStr) return 0;
   try {
-    const targetDate = new Date(dateStr);
+    const targetDate = parseFlexibleDate(dateStr);
+    if (!targetDate || isNaN(targetDate.getTime())) return 0;
     targetDate.setHours(23, 59, 59, 999);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -102,7 +151,8 @@ const getRemainingDaysNum = (dateStr: string): number => {
 const getDaysStayedSoFar = (startDateStr: string): number => {
   if (!startDateStr) return 0;
   try {
-    const startDate = new Date(startDateStr);
+    const startDate = parseFlexibleDate(startDateStr);
+    if (!startDate || isNaN(startDate.getTime())) return 0;
     startDate.setHours(0, 0, 0, 0);
     const today = new Date();
     today.setHours(0, 0, 0, 0);

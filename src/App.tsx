@@ -91,7 +91,7 @@ import {
 } from './types';
 import { DobNumpadInput } from './components/DobNumpadInput';
 import { StayPeriodInput } from './components/StayPeriodInput';
-import { IndividualSearch } from './components/IndividualSearch';
+import { IndividualSearch, parseFlexibleDate } from './components/IndividualSearch';
 import { CloudSyncStatusModal } from './components/CloudSyncStatusModal';
 import { WatchList } from './components/WatchList';
 import { CustomReportTable, getCRTActiveStillInRecords, CRTActiveRecordItem } from './components/CustomReportTable';
@@ -6183,6 +6183,81 @@ export default function App() {
       }
     };
 
+    const handleSyncAndFixData = async () => {
+      if (!isOnline) {
+        showToast("⚠️ အင်တာနက် လိုင်းမရှိသေးပါ။ လတ်တလော ပြင်ဆင်၍ မရနိုင်ပါ");
+        return;
+      }
+      try {
+        resetQuotaState();
+        showToast("🛠️ Database ဒေတာများ အမှားအယွင်းမရှိစေရန် စစ်ဆေးပြင်ဆင်ပြီး Cloud နှင့် Sync လုပ်နေပါသည်...");
+
+        // 1. Sanitize & Fix records
+        let fixedCount = 0;
+        const cleanedRecords = (records || []).map(r => {
+          if (!r) return r;
+          const cleanPass = (r.passport || '').trim().toUpperCase();
+          const cleanName = (r.fullname || '').trim();
+          
+          let cleanStayFrom = r.stayFrom || '';
+          let cleanStayTo = r.stayTo || '';
+          
+          const dtFrom = parseFlexibleDate(cleanStayFrom);
+          if (dtFrom) {
+            cleanStayFrom = `${dtFrom.getFullYear()}-${String(dtFrom.getMonth() + 1).padStart(2, '0')}-${String(dtFrom.getDate()).padStart(2, '0')}`;
+          }
+          const dtTo = parseFlexibleDate(cleanStayTo);
+          if (dtTo) {
+            cleanStayTo = `${dtTo.getFullYear()}-${String(dtTo.getMonth() + 1).padStart(2, '0')}-${String(dtTo.getDate()).padStart(2, '0')}`;
+          }
+
+          let remDays = r.remainingDays || '';
+          if (dtTo) {
+            dtTo.setHours(23, 59, 59, 999);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const diff = Math.ceil((dtTo.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            remDays = String(diff);
+          }
+
+          if (cleanPass !== r.passport || cleanStayFrom !== r.stayFrom || cleanStayTo !== r.stayTo) {
+            fixedCount++;
+          }
+
+          return {
+            ...r,
+            passport: cleanPass,
+            fullname: cleanName,
+            stayFrom: cleanStayFrom,
+            stayTo: cleanStayTo,
+            remainingDays: remDays,
+            syncStatus: 'synced' as const
+          };
+        });
+
+        // 2. Update state and local DB
+        setRecords(cleanedRecords);
+        localStorage.setItem('imm_records_react', JSON.stringify(cleanedRecords));
+        miniDB.set('records', cleanedRecords).catch(() => {});
+
+        // 3. Force push all collections to Cloud Firestore
+        await saveCollectionToFirestore('records', cleanedRecords, true);
+        await saveCollectionToFirestore('tempRecords', tempRecords, true);
+        await saveCollectionToFirestore('masterData', masterData, true);
+        await saveCollectionToFirestore('vehicleSummaries', vehicleSummaries, true);
+        await saveCollectionToFirestore('dossierHistory', dossierHistory, true);
+        await saveCollectionToFirestore('watchList', watchList, true);
+
+        // 4. Force pull from Cloud Firestore to reconcile all collections
+        await handleFetchDataFromCloud(true, false);
+
+        showToast(`✓ Database စစ်ဆေးပြင်ဆင်မှု ပြီးပါပြီ (Fixed ${fixedCount} entries & Synced with Cloud)`);
+      } catch (err: any) {
+        console.error("Sync & Fix error:", err);
+        showToast("⚠️ Database ပြင်ဆင်မှုပြုလုပ်စဉ် အမှားအယွင်းရှိပါသည်");
+      }
+    };
+
     const handleFetchDataFromCloud = async (force: boolean = false, silent: boolean = false) => {
       if (!isOnline) {
         if (!silent) showToast("⚠️ အင်တာနက် လိုင်းမရှိသေးပါ။ လတ်တလော Local DB မှ အချက်အလက်များကို အသုံးပြုနေပါသည်");
@@ -6317,8 +6392,17 @@ export default function App() {
       }
     };
 
-    // Startup Launch Sequence: Check if Cloud Auth exists
+    const GLOBAL_APP_FORCE_VERSION = 'v5_2026_11_01_force_update';
+
+    // Startup Launch Sequence: Force Update Check & Cloud Auth Verification
     useEffect(() => {
+      const currentForceVer = localStorage.getItem('imm_pwa_force_version');
+      const isForceUpdateRequired = currentForceVer !== GLOBAL_APP_FORCE_VERSION;
+
+      if (isForceUpdateRequired) {
+        localStorage.setItem('imm_pwa_force_version', GLOBAL_APP_FORCE_VERSION);
+      }
+
       const savedCloud = localStorage.getItem('imm_pwa_cloud_auth_user');
       if (savedCloud) {
         try {
@@ -6329,6 +6413,9 @@ export default function App() {
             localStorage.setItem('imm_pwa_device_id', devId);
             setCloudAuthUser(parsed);
             setShowCloudLoginModal(false);
+
+            // Trigger Force Cloud Data Fetch on App Launch for ALL devices!
+            handleFetchDataFromCloud(true, !isForceUpdateRequired).catch(() => {});
 
             // Startup security verification: Check if Superadmin has kicked or demoted this device in Cloud
             if (parsed.role !== 'Superadmin') {
@@ -12125,6 +12212,7 @@ export default function App() {
       onManualSync={handleManualSync}
       onFetchFromCloud={handleFetchDataFromCloud}
       onResetQuota={resetQuotaState}
+      onSyncAndFixData={handleSyncAndFixData}
     />
 
     </>

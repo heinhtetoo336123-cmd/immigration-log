@@ -17,7 +17,8 @@ import {
   ShieldAlert,
   Plane,
   Truck,
-  Check
+  Check,
+  Wrench
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { CloudStats, fetchCloudCollectionStats } from '../lib/firebase';
@@ -46,6 +47,7 @@ interface CloudSyncStatusModalProps {
   watchList?: WatchListRecord[];
   onManualSync: () => Promise<void>;
   onFetchFromCloud: (force?: boolean, silent?: boolean) => Promise<void>;
+  onSyncAndFixData?: () => Promise<void>;
   onResetQuota?: () => void;
 }
 
@@ -66,7 +68,8 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
   dossierHistory = [],
   watchList = [],
   onManualSync,
-  onFetchFromCloud
+  onFetchFromCloud,
+  onSyncAndFixData
 }) => {
   const [cloudStats, setCloudStats] = useState<CloudStats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
@@ -113,6 +116,22 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
     setIsSyncingAction(true);
     try {
       await onFetchFromCloud(true, false);
+      await loadStats();
+    } finally {
+      setIsSyncingAction(false);
+    }
+  };
+
+  const handleTriggerSyncAndFix = async () => {
+    if (isSyncingAction || !isOnline) return;
+    setIsSyncingAction(true);
+    try {
+      if (onSyncAndFixData) {
+        await onSyncAndFixData();
+      } else {
+        await onManualSync();
+        await onFetchFromCloud(true, false);
+      }
       await loadStats();
     } finally {
       setIsSyncingAction(false);
@@ -282,6 +301,22 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
             >
               <DownloadCloud size={12} />
               <span>Pull Cloud</span>
+            </button>
+
+            <button
+              onClick={handleTriggerSyncAndFix}
+              disabled={isSyncingAction || !isOnline}
+              title="Scan, fix database inconsistencies, repair dates & sync with Cloud"
+              className={`py-1.5 px-2.5 rounded-lg font-black uppercase text-[10px] flex items-center gap-1 border transition-all shadow-xs ${
+                !isOnline
+                  ? 'bg-slate-800 text-slate-600 border-slate-700 cursor-not-allowed'
+                  : isSyncingAction
+                  ? 'bg-amber-600 text-white cursor-wait'
+                  : 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500/30 cursor-pointer'
+              }`}
+            >
+              <Wrench size={12} className={isSyncingAction ? "animate-spin" : ""} />
+              <span>Sync & Fix Data</span>
             </button>
           </div>
         </div>
