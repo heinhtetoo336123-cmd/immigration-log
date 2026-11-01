@@ -72,7 +72,8 @@ import {
   ZoomOut,
   Server,
   UploadCloud,
-  Sparkles
+  Sparkles,
+  Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import html2canvas from 'html2canvas';
@@ -3958,6 +3959,105 @@ const TelegraphTables = ({
     return allRecords.filter(r => isRecordOnDate(r, selectedDate) && r.mode === 'OUT' && (r.logType === 'FFE' || !r.logType));
   }, [allRecords, selectedDate]);
 
+  // Available unique flight list on selectedDate
+  const availableFlights = useMemo(() => {
+    const list: string[] = [];
+    rows.forEach(r => {
+      const fl = (r.flightName || '').trim().toUpperCase();
+      if (fl && !list.includes(fl)) {
+        list.push(fl);
+      }
+    });
+    foreignerInRecords.forEach(r => {
+      const fl = (r.vehicleInfo || '').trim().toUpperCase();
+      if (fl && !list.includes(fl)) {
+        list.push(fl);
+      }
+    });
+    return list;
+  }, [rows, foreignerInRecords]);
+
+  const generateViberMessage = useCallback((flightFilter?: string) => {
+    const dateFormatted = toBurmeseSlashDate(selectedDate);
+    const cleanDate = dateFormatted ? `(${dateFormatted.replace(/\s+/g, '')})` : `(${selectedDate})`;
+
+    let flightsToProcess = availableFlights;
+    if (flightFilter && flightFilter !== 'ALL') {
+      flightsToProcess = [flightFilter.toUpperCase().trim()];
+    }
+    if (flightsToProcess.length === 0) {
+      flightsToProcess = ['UB-365'];
+    }
+
+    const flightSections: string[] = [];
+
+    flightsToProcess.forEach(flightLabel => {
+      const matchingInRecords = foreignerInRecords.filter(r => 
+        (r.vehicleInfo || '').toUpperCase().trim() === flightLabel.toUpperCase().trim()
+      );
+
+      const count = matchingInRecords.length;
+      const burmeseCount = toBurmeseDigits(count);
+
+      let headerText = '';
+      if (count > 0) {
+        headerText = `${cleanDate} ရက်နေ့တွင် မြိတ်လေဆိပ်သို့ ${flightLabel} လေယာဉ်ဖြင့် နိုင်ငံခြားသား (${burmeseCount}) ဦးဝင်ရောက်လာပါသည်။`;
+      } else {
+        headerText = `${cleanDate} ရက်နေ့တွင် မြိတ်လေဆိပ်သို့ ${flightLabel} လေယာဉ်ဖြင့် နိုင်ငံခြားသား ဝင်ရောက်မှုမရှိပါ။`;
+      }
+
+      if (count === 0) {
+        flightSections.push(headerText);
+      } else {
+        const passengerBlocks = matchingInRecords.map((r, idx) => {
+          const isCo = isCoLtdAddress(r.address) || isCoLtdAddress(r.stayDescription || '');
+          let businessDesc = '';
+          if (isCo) {
+            const desc = (r.stayDescription || '').trim();
+            businessDesc = desc ? `${desc} လုပ်ငန်းလုပ်ကိုင်ရန်` : 'လုပ်ငန်းလုပ်ကိုင်ရန်';
+          } else {
+            // Hotel or non-Co Ltd address -> leave blank
+            businessDesc = '';
+          }
+
+          const stayFrom = r.stayFrom ? formatToDDMMYYYY(r.stayFrom) : '-';
+          const stayTo = r.stayTo ? formatToDDMMYYYY(r.stayTo) : '-';
+          const visaType = r.visaType || '-';
+          const visaNo = r.visaNumber || (r as any).visaNo || (r as any).visa || '-';
+          const passport = r.passport || '-';
+          const nationality = r.nationality || '-';
+          const fullname = (r.fullname || '').trim();
+          const address = r.address || '-';
+
+          const prefixNum = matchingInRecords.length > 1 ? `${toBurmeseDigits(idx + 1)}။ ` : '';
+          const namePart = fullname ? `${fullname} ` : '';
+
+          if (businessDesc) {
+            return `${prefixNum}${businessDesc}  (${stayFrom}) ရက်မှ (${stayTo}) ရက်အထိ သတ်တမ်းရှိသည့် (${visaType}) visa အမျိုးအစား visa no: (${visaNo}) ဖြင့် passport no (${passport}) ကိုင်ဆောင်သည့် (${nationality}) နိုင်ငံသား ${namePart}သည် (${address}) လိပ်စာတွင် တည်းခိုပါမည်။`;
+          } else {
+            return `${prefixNum}(${stayFrom}) ရက်မှ (${stayTo}) ရက်အထိ သတ်တမ်းရှိသည့် (${visaType}) visa အမျိုးအစား visa no: (${visaNo}) ဖြင့် passport no (${passport}) ကိုင်ဆောင်သည့် (${nationality}) နိုင်ငံသား ${namePart}သည် (${address}) လိပ်စာတွင် တည်းခိုပါမည်။`;
+          }
+        });
+
+        flightSections.push(`${headerText}\n\n${passengerBlocks.join('\n\n')}`);
+      }
+    });
+
+    return `${flightSections.join('\n\n')}\n\nသိရှိနိုင်ပါရန် တင်ပြအပ်။`;
+  }, [selectedDate, foreignerInRecords, availableFlights, isCoLtdAddress]);
+
+  const sendDirectToViber = (flight?: string) => {
+    const msg = generateViberMessage(flight);
+    try {
+      navigator.clipboard.writeText(msg);
+    } catch (e) {
+      console.error(e);
+    }
+    showToast("Viber သို့ တိုက်ရိုက် ပေးပို့လိုက်ပါပြီ (စာသားလည်း Copy ကူးပြီး)။");
+    const encoded = encodeURIComponent(msg);
+    window.open(`viber://forward?text=${encoded}`, '_blank');
+  };
+
   return (
     <div className="max-w-[1600px] mx-auto py-6 px-3 sm:px-6 space-y-6 select-text">
       {/* Sub-tab Navigation & Controls */}
@@ -4087,14 +4187,14 @@ const TelegraphTables = ({
             </div>
           </div>
 
-          {/* Global Batch Export Options */}
+          {/* Viber Report Action */}
           <button
-            onClick={exportAllToPhotos}
-            title="ဇယား (၆) ခုလုံးအား တစ်ခါတည်း Photo (PNG) အဖြစ် သိမ်းမည်"
-            className="px-3 py-2 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+            onClick={() => sendDirectToViber()}
+            title="Viber သို့ သတင်းပို့ရန် စာသား ထုတ်ယူမည်"
+            className="px-3.5 py-2 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
           >
-            <Download size={14} />
-            <span>Save ALL Photos</span>
+            <Send size={14} />
+            <span>Viber သတင်းပို့ရန်</span>
           </button>
 
           <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
@@ -4254,11 +4354,11 @@ const TelegraphTables = ({
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={exportTelegraphToPhoto}
-              className="px-3 py-1.5 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+              onClick={() => sendDirectToViber()}
+              className="px-3 py-1.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
             >
-              <Download size={13} />
-              <span>Save as Photo</span>
+              <Send size={13} />
+              <span>Viber သတင်းပို့ရန်</span>
             </button>
             <button
               onClick={handlePrint}
@@ -4478,11 +4578,11 @@ const TelegraphTables = ({
                 <span>Export Excel</span>
               </button>
               <button
-                onClick={exportInwardToPhoto}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                onClick={() => sendDirectToViber()}
+                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
               >
-                <Download size={13} />
-                <span>Save as Photo</span>
+                <Send size={13} />
+                <span>Viber သတင်းပို့ရန်</span>
               </button>
               <button
                 onClick={() => triggerDirectPrint(inwardRef.current, true)}
@@ -4608,11 +4708,11 @@ const TelegraphTables = ({
                 <span>Export Excel</span>
               </button>
               <button
-                onClick={exportOutwardToPhoto}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                onClick={() => sendDirectToViber()}
+                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
               >
-                <Download size={13} />
-                <span>Save as Photo</span>
+                <Send size={13} />
+                <span>Viber သတင်းပို့ရန်</span>
               </button>
               <button
                 onClick={() => triggerDirectPrint(outwardRef.current, true)}
@@ -4748,11 +4848,11 @@ const TelegraphTables = ({
                 <span>Export Excel</span>
               </button>
               <button
-                onClick={exportCompanyToPhoto}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                onClick={() => sendDirectToViber()}
+                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
               >
-                <Download size={13} />
-                <span>Save as Photo</span>
+                <Send size={13} />
+                <span>Viber သတင်းပို့ရန်</span>
               </button>
               <button
                 onClick={() => triggerDirectPrint(companyRef.current, true)}
@@ -4874,11 +4974,11 @@ const TelegraphTables = ({
                 <span>Export Excel</span>
               </button>
               <button
-                onClick={exportOtherToPhoto}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                onClick={() => sendDirectToViber()}
+                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
               >
-                <Download size={13} />
-                <span>Save as Photo</span>
+                <Send size={13} />
+                <span>Viber သတင်းပို့ရန်</span>
               </button>
               <button
                 onClick={() => triggerDirectPrint(otherRef.current, true)}
@@ -5000,11 +5100,11 @@ const TelegraphTables = ({
                 <span>Export Excel</span>
               </button>
               <button
-                onClick={exportAddressSummaryToPhoto}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-teal-600 hover:bg-teal-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                onClick={() => sendDirectToViber()}
+                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-purple-600 hover:bg-purple-700 text-white shadow-md transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
               >
-                <Download size={13} />
-                <span>Save as Photo</span>
+                <Send size={13} />
+                <span>Viber သတင်းပို့ရန်</span>
               </button>
               <button
                 onClick={() => triggerDirectPrint(addressSummaryRef.current, false)}
