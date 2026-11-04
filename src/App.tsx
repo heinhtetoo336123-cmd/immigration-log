@@ -312,6 +312,24 @@ const formatDateToDDMMYYYY = (dateStr: string) => {
   return formatToDDMMYYYY(dateStr) || dateStr;
 };
 
+export const isCoLtdAddress = (addressStr?: string): boolean => {
+  if (!addressStr) return false;
+  const s = String(addressStr).toLowerCase();
+  return (
+    s.includes('co.,ltd') ||
+    s.includes('co., ltd') ||
+    s.includes('co.ltd') ||
+    s.includes('co ltd') ||
+    s.includes('ltd') ||
+    s.includes('co.,') ||
+    s.includes('company') ||
+    s.includes('ကုမ္ပဏီ') ||
+    s.includes('ထရိတ်ဒင်း') ||
+    s.includes('ခရိုင်') ||
+    s.includes('လုပ်ငန်း')
+  );
+};
+
 // --- COMPONENTS ---
 
 const Toast = ({ message, visible }: { message: string; visible: boolean }) => (
@@ -2428,6 +2446,7 @@ const MasterDB = ({
                <option value="Contact">Contact Details</option>
                <option value="Official">Official Name</option>
                <option value="Title">Official Title</option>
+               <option value="Purpose">Purpose of Visit</option>
              </select>
            </div>
 
@@ -3217,6 +3236,7 @@ const TelegraphTables = ({
   const [customIntroText, setCustomIntroText] = useState(() => localStorage.getItem('tt_customIntroText') || "(တစ်) [DATE] ရက်နေ့တွင် ရန်ကုန်လေဆိပ်မှ မြိတ်မြို့၊ လေဆိပ်သို့ လေယာဉ် ( [FLIGHT_COUNT] ) စီး ဝင်ရောက်/ထွက်ခွာခဲ့ပြီး ခရီးသည်စာရင်းမှာ အောက်ပါအတိုင်းဖြစ် -");
   const [telegraphTitle, setTelegraphTitle] = useState(() => localStorage.getItem('tt_telegraphTitle') || "လေယာဉ် ရောက်ရှိ/ထွက်ခွါမှု တင်ပြခြင်း");
   const [activeSubTab, setActiveSubTab] = useState<'ALL' | 'TELEGRAPH' | 'FOREIGNER_IN' | 'FOREIGNER_OUT' | 'COMPANY_RESIDENTS' | 'OTHER_RESIDENTS' | 'ADDRESS_SUMMARY'>('ALL');
+  const [viberModalData, setViberModalData] = useState<{ open: boolean; message: string; flight?: string }>({ open: false, message: '' });
 
   const telegraphRef = React.useRef<HTMLDivElement>(null);
   const inwardRef = React.useRef<HTMLDivElement>(null);
@@ -4016,8 +4036,13 @@ const TelegraphTables = ({
             const desc = (r.stayDescription || '').trim();
             businessDesc = desc ? `${desc} လုပ်ငန်းလုပ်ကိုင်ရန်` : 'လုပ်ငန်းလုပ်ကိုင်ရန်';
           } else {
-            // Hotel or non-Co Ltd address -> leave blank
-            businessDesc = '';
+            // Hotel or non-Co Ltd address -> check purposeOfVisit or stayDescription
+            const purpose = (r.purposeOfVisit || r.stayDescription || '').trim();
+            if (purpose && !isCoLtdAddress(purpose)) {
+              businessDesc = purpose;
+            } else {
+              businessDesc = '';
+            }
           }
 
           const stayFrom = r.stayFrom ? formatToDDMMYYYY(r.stayFrom) : '-';
@@ -4053,9 +4078,12 @@ const TelegraphTables = ({
     } catch (e) {
       console.error(e);
     }
-    showToast("Viber သို့ တိုက်ရိုက် ပေးပို့လိုက်ပါပြီ (စာသားလည်း Copy ကူးပြီး)။");
+    setViberModalData({ open: true, message: msg, flight });
+    showToast("Viber သို့ ပေးပို့ရန် စာသားအပြည့်အစုံအား Copy ကူးပြီးပါပြီ");
     const encoded = encodeURIComponent(msg);
-    window.open(`viber://forward?text=${encoded}`, '_blank');
+    try {
+      window.open(`viber://forward?text=${encoded}`, '_blank');
+    } catch (e) {}
   };
 
   return (
@@ -5852,6 +5880,7 @@ export default function App() {
     const [isQuotaExhausted, setIsQuotaExhausted] = useState<boolean>(() => getIsQuotaExhausted());
     const [isAutoSyncing, setIsAutoSyncing] = useState<boolean>(false);
     const [isSyncModalOpen, setIsSyncModalOpen] = useState<boolean>(false);
+    const [viberModalData, setViberModalData] = useState<{ open: boolean; message: string; flight?: string } | null>(null);
 
     const [uploadErrorAlarm, setUploadErrorAlarm] = useState<{
       show: boolean;
@@ -6888,6 +6917,7 @@ export default function App() {
     nationality: '',
     address: '',
     stayDescription: '',
+    purposeOfVisit: '',
     visaType: '',
     visaNumber: '',
     vehicleInfo: '',
@@ -7627,6 +7657,7 @@ export default function App() {
       // Auto sync master picks
       syncMaster(newRecord.nationality, 'Nationality');
       syncMaster(newRecord.visaType, 'Visa');
+      if (newRecord.purposeOfVisit) syncMaster(newRecord.purposeOfVisit, 'Purpose');
       syncMaster(newRecord.address, 'Stay', formData.stayDescription);
       syncMaster(newRecord.vehicleInfo, 'Vehicle');
       syncMaster(newRecord.broughtBy, 'Agent');
@@ -7778,7 +7809,7 @@ export default function App() {
   const resetForm = () => {
     setFormData(prev => ({
       passport: '', previousPassport: '', dualPassportRemarks: '', fullname: '', gender: 'M', dob: '', nationality: '',
-      address: '', visaType: '', visaNumber: '', stayFrom: '',
+      address: '', stayDescription: '', purposeOfVisit: '', visaType: '', visaNumber: '', stayFrom: '',
       stayTo: '', totalDays: '', 
       arrivedFrom: currentMode === 'OUT' ? 'MGZ' : '', 
       departedTo: currentMode === 'IN' ? 'MGZ' : '',
@@ -8814,6 +8845,18 @@ export default function App() {
             <datalist id="stayList">{(masterData || []).filter(m => m && m.type === 'Stay' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
             <datalist id="vehicleList">{(masterData || []).filter(m => m && m.type === 'Vehicle' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
             <datalist id="locationList">{(masterData || []).filter(m => m && m.type === 'Stay' && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `${m.name}-${idx}`} value={m.name} />)}</datalist>
+            <datalist id="purposeList">
+              {(masterData || []).filter(m => m && (m.type === 'Purpose' || m.type === 'PermitDescription') && m.name).map((m, idx) => <option key={m.id ? `${m.id}-${idx}` : `purp-${idx}`} value={m.name} />)}
+              <option value="အလည်အပတ်" />
+              <option value="Sightseeing" />
+              <option value="Tourism" />
+              <option value="Business Visit" />
+              <option value="Official Visit" />
+              <option value="Meeting" />
+              <option value="Shopping" />
+              <option value="Social Visit" />
+              <option value="Personal Visit" />
+            </datalist>
 
             <div>
               <label className="input-label">နိုင်ငံသား (Nationality)</label>
@@ -8857,16 +8900,41 @@ export default function App() {
                 placeholder="Select or type..." 
               />
             </div>
-            <div>
-              <label className="input-label text-indigo-900 font-extrabold">🏡 Detail Address / Stay Description (လိပ်စာအသေးစိတ်)</label>
-              <input 
-                type="text" 
-                value={formData.stayDescription || ''} 
-                readOnly
-                className="input-field bg-slate-100 border-slate-300 text-slate-500 font-medium cursor-not-allowed select-none" 
-                placeholder="Auto-populated detail stay description..." 
-              />
-            </div>
+
+            {Boolean(formData.address && !isCoLtdAddress(formData.address)) ? (
+              <div className="p-3 bg-purple-50/60 rounded-2xl border border-purple-200 space-y-1.5 animate-in fade-in duration-200">
+                <label className="input-label text-purple-900 font-black text-xs flex items-center justify-between mb-1">
+                  <span>🎯 Purpose of Visit (ခရီးသွားရည်ရွယ်ချက်) - Optional</span>
+                  <span className="text-[9px] bg-purple-200 text-purple-900 font-bold px-1.5 py-0.2 rounded">Hotel / Guest</span>
+                </label>
+                <input 
+                  list="purposeList" 
+                  type="text" 
+                  value={formData.purposeOfVisit || ''} 
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setFormData(prev => ({ 
+                      ...prev, 
+                      purposeOfVisit: val,
+                      stayDescription: isCoLtdAddress(prev.address || '') ? prev.stayDescription : val
+                    }));
+                  }} 
+                  className="input-field border-purple-300 focus:ring-purple-500 bg-white text-purple-950 font-bold text-xs" 
+                  placeholder="Select or type purpose (e.g. အလည်အပတ်, Sightseeing, Business)..." 
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="input-label text-indigo-900 font-extrabold">🏡 Detail Address / Stay Description (လိပ်စာအသေးစိတ်)</label>
+                <input 
+                  type="text" 
+                  value={formData.stayDescription || ''} 
+                  readOnly
+                  className="input-field bg-slate-100 border-slate-300 text-slate-500 font-medium cursor-not-allowed select-none" 
+                  placeholder="Auto-populated detail stay description..." 
+                />
+              </div>
+            )}
           </div>
 
           {/* Column 3: Stay Period, Vehicle Info & Route */}
@@ -9067,6 +9135,7 @@ export default function App() {
         stayFrom: r.stayFrom ? formatToDDMMYYYY(r.stayFrom) : '',
         stayTo: r.stayTo ? formatToDDMMYYYY(r.stayTo) : '',
         stayDescription: r.stayDescription || '',
+        purposeOfVisit: r.purposeOfVisit || '',
         totalDays: r.totalDays != null ? String(r.totalDays) : ''
       });
       setCurrentMode(r.mode);
@@ -12214,6 +12283,96 @@ export default function App() {
       onResetQuota={resetQuotaState}
       onSyncAndFixData={handleSyncAndFixData}
     />
+
+    {/* Viber Full Text & App Forward Modal */}
+    {viberModalData && viberModalData.open && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs no-print">
+        <div className="bg-white w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl border-4 border-purple-800 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
+          <div className="bg-purple-900 p-4 sm:p-5 text-white flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-700 rounded-xl text-white">
+                <Send size={20} />
+              </div>
+              <div>
+                <h3 className="font-black text-base uppercase tracking-wide">Viber သတင်းပို့ရန် စာသားအပြည့်အစုံ</h3>
+                <p className="text-[11px] text-purple-200 font-bold mt-0.5">
+                  PC နှင့် Android တွင် Viber URI Limit ကြောင့် စာသားပြတ်တောက်ပါက Copy နှိပ်၍ Viber တွင် Paste လုပ်ပါ
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setViberModalData(null)}
+              className="hover:bg-white/20 p-2 rounded-full text-white transition-colors cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="p-4 sm:p-6 overflow-y-auto space-y-4">
+            <div className="bg-purple-50 p-3 rounded-2xl border border-purple-200 text-purple-950 text-xs font-bold flex items-center justify-between flex-wrap gap-2">
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                <span>စာသားအပြည့်အစုံအား Clipboard (Copy) ထဲသို့ ထည့်သွင်းပြီးပါပြီ</span>
+              </span>
+              <span className="text-[10px] bg-purple-200 text-purple-900 px-2 py-0.5 rounded-full font-mono">
+                {viberModalData.message.length} Characters
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-black uppercase text-slate-700 mb-1.5">
+                သတင်းပို့လိုသော စာသားအပြည့်အစုံ (Full Message Preview)
+              </label>
+              <textarea
+                rows={10}
+                readOnly
+                value={viberModalData.message}
+                className="w-full p-3.5 bg-slate-50 border border-slate-300 rounded-2xl text-xs font-medium font-pyidaungsu text-slate-900 focus:outline-none leading-relaxed select-all"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(viberModalData.message);
+                  showToast("✓ စာသားအပြည့်အစုံ Copy ကူးပြီးပါပြီ! Viber တွင် Paste (Ctrl+V) နှိပ်ပါ");
+                }}
+                className="py-3 px-4 bg-purple-700 hover:bg-purple-800 text-white font-black text-xs rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all"
+              >
+                <Copy size={16} />
+                <span>Copy Full Text</span>
+              </button>
+
+              {typeof navigator !== 'undefined' && 'share' in navigator && (
+                <button
+                  onClick={() => {
+                    navigator.share({
+                      title: 'Viber Flight Report',
+                      text: viberModalData.message
+                    }).catch(() => {});
+                  }}
+                  className="py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all"
+                >
+                  <Smartphone size={16} />
+                  <span>System Share Sheet</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  const encoded = encodeURIComponent(viberModalData.message);
+                  window.open(`viber://forward?text=${encoded}`, '_blank');
+                }}
+                className="py-3 px-4 bg-slate-900 hover:bg-black text-white font-black text-xs rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all"
+              >
+                <Send size={16} />
+                <span>Open Viber App</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
 
     </>
   );

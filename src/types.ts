@@ -40,6 +40,7 @@ export interface ImmRecord {
   nationality: string;
   address: string;
   stayDescription?: string;
+  purposeOfVisit?: string;
   visaType: string;
   visaNumber?: string;
   vehicleInfo: string;
@@ -69,7 +70,7 @@ export interface ImmRecord {
 export interface MasterItem {
   id: number;
   name: string;
-  type: 'Nationality' | 'Visa' | 'Stay' | 'Vehicle' | 'Agent' | 'Contact' | 'Official' | 'Title' | 'Reporter' | 'Phone' | 'PermitDescription';
+  type: 'Nationality' | 'Visa' | 'Stay' | 'Vehicle' | 'Agent' | 'Contact' | 'Official' | 'Title' | 'Reporter' | 'Phone' | 'PermitDescription' | 'Purpose';
   linkedValue?: string;
   updatedAt?: string;
   syncStatus?: 'pending_sync' | 'upload_failed' | 'synced';
@@ -189,6 +190,7 @@ export interface MovementData {
   dualPassportRemarks?: string;
   linkedPassports?: string[];
   stayDescription?: string;
+  purposeOfVisit?: string;
   stillPermittedStatus?: string;
   permittedBy?: string;
   remarks?: string;
