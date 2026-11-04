@@ -1,4 +1,4 @@
-const CACHE_NAME = 'immigration-log-pwa-v1';
+const CACHE_NAME = 'immigration-log-pwa-v11-force-update';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -6,6 +6,12 @@ const urlsToCache = [
   '/icon-192.svg',
   '/icon-512.svg'
 ];
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

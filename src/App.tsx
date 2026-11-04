@@ -330,6 +330,27 @@ export const isCoLtdAddress = (addressStr?: string): boolean => {
   );
 };
 
+export const handleForceAppUpdate = async () => {
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (const reg of registrations) {
+        await reg.unregister();
+      }
+    }
+    localStorage.setItem('app_build_version', 'v11.0_manual_' + Date.now());
+    sessionStorage.clear();
+    window.location.reload();
+  } catch (e) {
+    console.error(e);
+    window.location.reload();
+  }
+};
+
 // --- COMPONENTS ---
 
 const Toast = ({ message, visible }: { message: string; visible: boolean }) => (
@@ -8227,6 +8248,18 @@ export default function App() {
                       </button>
                     </div>
                   )}
+
+                  {/* Manual Force App Update Button */}
+                  <div className="border-t border-slate-800 pt-2">
+                    <button
+                      onClick={handleForceAppUpdate}
+                      className="w-full bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-black py-1.5 rounded-xl flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      title="အက်ပ် ကက်ရှ်များအား ရှင်းထုတ်ပြီး နောက်ဆုံးထွက် ဗားရှင်းသို့ အသစ်စက်စက် Force Update ပြုလုပ်မည်"
+                    >
+                      <RefreshCw size={13} className="animate-spin-slow" />
+                      <span>⚡ Force App Update</span>
+                    </button>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>

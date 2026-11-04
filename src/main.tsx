@@ -128,11 +128,57 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   }
 }
 
-// Register PWA Service Worker
-if ('serviceWorker' in navigator && (import.meta as any).env?.PROD) {
+// Force Update Version Check for Next Launch across all devices
+const BUILD_VERSION = 'v11.0_20261104_force_update_v2';
+
+async function checkAndApplyForceUpdate() {
+  try {
+    const storedVersion = localStorage.getItem('app_build_version');
+    if (storedVersion !== BUILD_VERSION) {
+      console.log(`[Force Update] Upgrading app build from ${storedVersion || 'legacy'} to ${BUILD_VERSION}...`);
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const reg of registrations) {
+          await reg.unregister();
+        }
+      }
+      localStorage.setItem('app_build_version', BUILD_VERSION);
+      // Automatically refresh to load fresh bundle
+      window.location.reload();
+      return;
+    }
+  } catch (e) {
+    console.error('Force update check failed:', e);
+    localStorage.setItem('app_build_version', BUILD_VERSION);
+  }
+}
+
+// Execute update check immediately on next launch
+checkAndApplyForceUpdate();
+
+// Register PWA Service Worker & Monitor for Updates
+if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').then(
-      (reg) => console.log('PWA ServiceWorker registered with scope: ', reg.scope),
+      (reg) => {
+        console.log('PWA ServiceWorker registered with scope: ', reg.scope);
+        reg.update().catch(() => {});
+        reg.onupdatefound = () => {
+          const installingWorker = reg.installing;
+          if (installingWorker) {
+            installingWorker.onstatechange = () => {
+              if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('New update installed! Reloading app...');
+                window.location.reload();
+              }
+            };
+          }
+        };
+      },
       (err) => console.log('PWA ServiceWorker registration failed: ', err)
     );
   });
