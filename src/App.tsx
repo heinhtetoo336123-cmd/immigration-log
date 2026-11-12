@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, getDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps } from './lib/firebase';
+import { initAuth, saveCollectionToFirestore, subscribeToFirestoreCollection, fetchCollectionFromFirestore, checkAndFetchUpdatedCollections, resetQuotaState, onQuotaStatusChange, getIsQuotaExhausted, setQuotaExhausted, onWriteError, WriteErrorInfo, setSyncedHash, saveDeviceSession, getDeviceSession, setDeviceKickedStatus, updateDeviceRole, deleteDeviceSession, subscribeToDeviceSessions, subscribeToMyDeviceSession, fetchDeviceSessions, getCloudMetadata, getLocalTimestamps, softDeleteRecord, fetchDeletedRecords, restoreDeletedRecord, mergeCollectionItems } from './lib/firebase';
 import { 
   Link2,
   Link,
@@ -96,6 +96,9 @@ import { CloudSyncStatusModal } from './components/CloudSyncStatusModal';
 import { WatchList } from './components/WatchList';
 import { CustomReportTable, getCRTActiveStillInRecords, CRTActiveRecordItem } from './components/CustomReportTable';
 import { ActivityLogView } from './components/ActivityLogView';
+import { DeleteConfirmationModal } from './components/DeleteConfirmationModal';
+import { ConflictResolverModal } from './components/ConflictResolverModal';
+import { RecycleBinView } from './components/RecycleBinView';
 import { logActivity } from './utils/activityLogger';
 import { miniDB } from './db';
 
@@ -1887,7 +1890,10 @@ const MasterDB = ({
   setSearchQuery,
   setActiveTab,
   setRecords,
-  setTempRecords
+  setTempRecords,
+  currentUser,
+  cloudAuthUser,
+  onRequestDeleteConfirm
 }: { 
   masterData: MasterItem[]; 
   setMasterData: React.Dispatch<React.SetStateAction<MasterItem[]>>; 
@@ -1898,6 +1904,9 @@ const MasterDB = ({
   setActiveTab: (t: string) => void;
   setRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
   setTempRecords: React.Dispatch<React.SetStateAction<ImmRecord[]>>;
+  currentUser?: any;
+  cloudAuthUser?: any;
+  onRequestDeleteConfirm?: (title: string, itemDetails: any, onConfirm: (reason: string) => void) => void;
 }) => {
   const [mName, setMName] = useState('');
   const [mType, setMType] = useState<MasterItem['type']>('Nationality');
@@ -1957,17 +1966,36 @@ const MasterDB = ({
 
   const deleteMaster = (id: number) => {
     const targetM = masterData.find(m => m.id === id);
-    setMasterData(prev => prev.filter(m => m.id !== id));
-    if (targetM) {
-      logActivity({
-        action: 'DELETE',
-        module: 'MASTER',
-        targetId: targetM.name,
-        details: `Deleted Master Reference [${targetM.type}]: "${targetM.name}"`
-      });
+    if (!targetM) return;
+
+    const activeOfficer = currentUser ? `${currentUser.title} ${currentUser.name}` : (cloudAuthUser?.username || 'Duty Officer');
+
+    if (onRequestDeleteConfirm) {
+      onRequestDeleteConfirm(
+        `Delete Master Item: "${targetM.name}" [${targetM.type}]`,
+        {
+          primaryText: `${targetM.name} (${targetM.type})`,
+          secondaryText: targetM.linkedValue ? `Linked: ${targetM.linkedValue}` : undefined
+        },
+        async (reason: string) => {
+          await softDeleteRecord('masterData', targetM, activeOfficer, cloudAuthUser?.role || 'Editor', reason);
+          setMasterData(prev => prev.filter(m => m.id !== id));
+          logActivity({
+            action: 'DELETE',
+            module: 'MASTER',
+            officerName: activeOfficer,
+            officerRole: cloudAuthUser?.role || 'Editor',
+            targetId: targetM.name,
+            details: `Soft deleted Master Reference [${targetM.type}]: "${targetM.name}". Reason: ${reason}`
+          });
+          showToast("🗑️ Master Data item အား အမှိုက်ပုံး (Recycle Bin) သို့ ရွှေ့ပြောင်းပြီးပါပြီ");
+          setConfirmMasterDeleteId(null);
+        }
+      );
+    } else {
+      setMasterData(prev => prev.filter(m => m.id !== id));
+      setConfirmMasterDeleteId(null);
     }
-    showToast("DELETED");
-    setConfirmMasterDeleteId(null);
   };
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -5903,6 +5931,29 @@ export default function App() {
     const [isSyncModalOpen, setIsSyncModalOpen] = useState<boolean>(false);
     const [viberModalData, setViberModalData] = useState<{ open: boolean; message: string; flight?: string } | null>(null);
 
+    const [deleteModalState, setDeleteModalState] = useState<{
+      isOpen: boolean;
+      title: string;
+      itemDetails?: { primaryText: string; secondaryText?: string; infoList?: Array<{ label: string; value: string }> };
+      warningText?: string;
+      onConfirm: (reason: string) => void;
+    }>({
+      isOpen: false,
+      title: '',
+      onConfirm: () => {},
+    });
+
+    const [conflictState, setConflictState] = useState<{
+      isOpen: boolean;
+      localRecord: ImmRecord | null;
+      remoteRecord: ImmRecord | null;
+      onResolve?: (action: 'KEEP_LOCAL' | 'KEEP_REMOTE' | 'KEEP_BOTH') => void;
+    }>({
+      isOpen: false,
+      localRecord: null,
+      remoteRecord: null,
+    });
+
     const [uploadErrorAlarm, setUploadErrorAlarm] = useState<{
       show: boolean;
       reason: string;
@@ -8309,6 +8360,7 @@ export default function App() {
                       { id: 'customReport', label: 'Custom Report Table (CRT)', short: 'CRT', icon: FileSpreadsheet },
                       { id: 'telegraph', label: 'Telegraph and Tables (T&T)', short: 'T&T', icon: ClipboardList },
                       { id: 'watchList', label: 'Watch-list (WL)', short: 'WL', icon: ShieldAlert },
+                      { id: 'recycleBin', label: 'Recycle Bin / Soft-Delete (အမှိုက်ပုံး)', short: 'BIN', icon: Trash2 },
                       ...(cloudAuthUser?.role === 'Superadmin' ? [
                         { id: 'auditLog', label: 'Activity & Audit Log (Superadmin)', short: 'AUDIT', icon: Activity }
                       ] : []),
@@ -9181,19 +9233,38 @@ export default function App() {
         return;
       }
       const target = records.find(r => r.id === id);
-      setRecords(prev => prev.filter(r => r.id !== id));
-      setConfirmDeleteId(null);
-      if (target) {
-        logActivity({
-          action: 'DELETE',
-          module: 'FFE',
-          officerName: cloudAuthUser?.username,
-          officerRole: cloudAuthUser?.role || 'Editor',
-          targetId: target.passport,
-          details: `Deleted ${target.logType || 'FFE'} [${target.mode}] record #${target.id} (${target.passport}, ${target.fullname || 'N/A'})`
-        });
-      }
-      showToast("RECORD DELETED");
+      if (!target) return;
+
+      const activeOfficer = currentUser ? `${currentUser.title} ${currentUser.name}` : (cloudAuthUser?.username || 'Duty Officer');
+
+      setDeleteModalState({
+        isOpen: true,
+        title: `Delete Record #${target.id} (${target.fullname})`,
+        itemDetails: {
+          primaryText: target.fullname || 'Unknown Name',
+          secondaryText: `Passport: ${target.passport} | Mode: ${target.mode} | Visa: ${target.visaType}`,
+          infoList: [
+            { label: 'Date/Time', value: target.timestamp },
+            { label: 'Stay Location', value: target.address },
+            { label: 'Vehicle Info', value: target.vehicleInfo || '-' }
+          ]
+        },
+        warningText: `မှတ်တမ်း #${target.id} (${target.passport}) အား အမှိုက်ပုံး (Recycle Bin) သို့ ရွှေ့ပြောင်းပါမည်။ ဖျက်ပစ်ရန် CONFIRMED ဟု ရိုက်ထည့်ပါ-`,
+        onConfirm: async (reason) => {
+          await softDeleteRecord('records', target, activeOfficer, cloudAuthUser?.role || 'Editor', reason);
+          setRecords(prev => prev.filter(r => r.id !== id));
+          setConfirmDeleteId(null);
+          logActivity({
+            action: 'DELETE',
+            module: 'FFE',
+            officerName: activeOfficer,
+            officerRole: cloudAuthUser?.role || 'Editor',
+            targetId: target.passport,
+            details: `Soft deleted ${target.logType || 'FFE'} [${target.mode}] record #${target.id} (${target.passport}, ${target.fullname || 'N/A'}). Reason: ${reason}`
+          });
+          showToast("🗑️ မှတ်တမ်းအား အမှိုက်ပုံး (Recycle Bin) သို့ အောင်မြင်စွာ ရွှေ့ပြောင်းပြီးပါပြီ");
+        }
+      });
     };
 
     const batchDelete = () => {
@@ -9202,18 +9273,35 @@ export default function App() {
         return;
       }
       if (selectedIds.length === 0) return;
+      const targets = records.filter(r => selectedIds.includes(r.id));
       const count = selectedIds.length;
-      setRecords(prev => prev.filter(r => !selectedIds.includes(r.id)));
-      setSelectedIds([]);
-      logActivity({
-        action: 'DELETE',
-        module: 'FFE',
-        officerName: cloudAuthUser?.username,
-        officerRole: cloudAuthUser?.role || 'Editor',
-        targetId: `${count} records`,
-        details: `Batch deleted ${count} records from database`
+      const activeOfficer = currentUser ? `${currentUser.title} ${currentUser.name}` : (cloudAuthUser?.username || 'Duty Officer');
+
+      setDeleteModalState({
+        isOpen: true,
+        title: `Batch Delete ${count} Selected Records`,
+        itemDetails: {
+          primaryText: `Total ${count} Flight Records Selected`,
+          secondaryText: `Target IDs: ${selectedIds.slice(0, 5).join(', ')}${selectedIds.length > 5 ? '...' : ''}`
+        },
+        warningText: `ရွေးချယ်ထားသော မှတ်တမ်း ${count} ခုအား အမှိုက်ပုံး (Recycle Bin) သို့ အစုလိုက် ရွှေ့ပြောင်းရန် CONFIRMED ဟု ရိုက်ထည့်ပါ-`,
+        onConfirm: async (reason) => {
+          for (const t of targets) {
+            await softDeleteRecord('records', t, activeOfficer, cloudAuthUser?.role || 'Editor', reason);
+          }
+          setRecords(prev => prev.filter(r => !selectedIds.includes(r.id)));
+          setSelectedIds([]);
+          logActivity({
+            action: 'DELETE',
+            module: 'FFE',
+            officerName: activeOfficer,
+            officerRole: cloudAuthUser?.role || 'Editor',
+            targetId: `${count} records`,
+            details: `Batch soft-deleted ${count} records. Reason: ${reason}`
+          });
+          showToast(`🗑️ မှတ်တမ်း ${count} ခုအား အမှိုက်ပုံး (Recycle Bin) သို့ ရွှေ့ပြောင်းပြီးပါပြီ`);
+        }
       });
-      showToast(`${count} RECORDS REMOVED`);
     };
 
     return (
@@ -10071,21 +10159,39 @@ export default function App() {
   };
 
   const deleteRecord = (id: number) => {
-    const target = records.find(r => r.id === id);
-    setRecords(prev => prev.filter(r => r.id !== id));
-    setTempRecords(prev => prev.filter(r => r.id !== id));
-    setConfirmDeleteId(null);
-    if (target) {
-      logActivity({
-        action: 'DELETE',
-        module: 'FFE',
-        officerName: cloudAuthUser?.username,
-        officerRole: cloudAuthUser?.role || 'Editor',
-        targetId: target.passport,
-        details: `Deleted ${target.logType || 'FFE'} [${target.mode}] record #${target.id} (${target.passport}, ${target.fullname || 'N/A'})`
-      });
-    }
-    showToast("RECORD REMOVED SUCCESSFULLY");
+    const target = records.find(r => r.id === id) || tempRecords.find(r => r.id === id);
+    if (!target) return;
+
+    const activeOfficer = currentUser ? `${currentUser.title} ${currentUser.name}` : (cloudAuthUser?.username || 'Duty Officer');
+
+    setDeleteModalState({
+      isOpen: true,
+      title: `Delete Record #${target.id} (${target.fullname})`,
+      itemDetails: {
+        primaryText: target.fullname || 'Unknown Name',
+        secondaryText: `Passport: ${target.passport} | Mode: ${target.mode} | Visa: ${target.visaType}`,
+        infoList: [
+          { label: 'Date/Time', value: target.timestamp },
+          { label: 'Stay Location', value: target.address }
+        ]
+      },
+      warningText: `မှတ်တမ်း #${target.id} (${target.passport}) အား အမှိုက်ပုံး (Recycle Bin) သို့ ရွှေ့ပြောင်းရန် CONFIRMED ဟု ရိုက်ထည့်ပါ-`,
+      onConfirm: async (reason) => {
+        await softDeleteRecord('records', target, activeOfficer, cloudAuthUser?.role || 'Editor', reason);
+        setRecords(prev => prev.filter(r => r.id !== id));
+        setTempRecords(prev => prev.filter(r => r.id !== id));
+        setConfirmDeleteId(null);
+        logActivity({
+          action: 'DELETE',
+          module: 'FFE',
+          officerName: activeOfficer,
+          officerRole: cloudAuthUser?.role || 'Editor',
+          targetId: target.passport,
+          details: `Soft deleted record #${target.id} (${target.passport}, ${target.fullname || 'N/A'}). Reason: ${reason}`
+        });
+        showToast("🗑️ မှတ်တမ်းအား အမှိုက်ပုံး (Recycle Bin) သို့ အောင်မြင်စွာ ရွှေ့ပြောင်းပြီးပါပြီ");
+      }
+    });
   };
 
   const exportAllToExcel = () => {
@@ -10455,6 +10561,18 @@ export default function App() {
             setActiveTab={setActiveTab}
             setRecords={setRecords}
             setTempRecords={setTempRecords}
+            currentUser={currentUser}
+            cloudAuthUser={cloudAuthUser}
+            onRequestDeleteConfirm={(title, details, confirmCb) => {
+              setDeleteModalState({
+                isOpen: true,
+                title,
+                itemDetails: details,
+                onConfirm: (reason) => {
+                  confirmCb(reason);
+                }
+              });
+            }}
           />
         )}
         {activeTab === 'tableOutput' && (
@@ -10504,6 +10622,30 @@ export default function App() {
             setWatchList={setWatchList}
             handleManualSync={handleManualSync}
             handleFetchDataFromCloud={handleFetchDataFromCloud}
+          />
+        )}
+        {activeTab === 'recycleBin' && (
+          <RecycleBinView
+            currentUser={currentUser}
+            showToast={showToast}
+            onRestored={(restoredInfo) => {
+              if (restoredInfo.collection === 'records' || restoredInfo.collection === 'tempRecords') {
+                setRecords(prev => mergeCollectionItems(prev, [restoredInfo.item]));
+              } else if (restoredInfo.collection === 'masterData') {
+                setMasterData(prev => mergeCollectionItems(prev, [restoredInfo.item]));
+              }
+              showToast(`Restored ${restoredInfo.item.name || restoredInfo.item.fullname || restoredInfo.item.passport} successfully!`);
+            }}
+            onRequestDeleteConfirm={(title, details, confirmCb) => {
+              setDeleteModalState({
+                isOpen: true,
+                title,
+                itemDetails: details,
+                onConfirm: (reason) => {
+                  confirmCb();
+                }
+              });
+            }}
           />
         )}
         {activeTab === 'info' && renderInfoTab()}
@@ -12406,6 +12548,30 @@ export default function App() {
         </div>
       </div>
     )}
+    {/* Global Security Safeguard Modals */}
+      <DeleteConfirmationModal
+        isOpen={deleteModalState.isOpen}
+        onClose={() => setDeleteModalState(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={(reason) => {
+          if (deleteModalState.onConfirm) deleteModalState.onConfirm(reason);
+        }}
+        title={deleteModalState.title}
+        itemDetails={deleteModalState.itemDetails}
+        warningText={deleteModalState.warningText}
+      />
+
+      {conflictState.localRecord && conflictState.remoteRecord && (
+        <ConflictResolverModal
+          isOpen={conflictState.isOpen}
+          onClose={() => setConflictState(prev => ({ ...prev, isOpen: false }))}
+          localRecord={conflictState.localRecord}
+          remoteRecord={conflictState.remoteRecord}
+          onResolve={(action) => {
+            if (conflictState.onResolve) conflictState.onResolve(action);
+            setConflictState(prev => ({ ...prev, isOpen: false }));
+          }}
+        />
+      )}
 
     </>
   );

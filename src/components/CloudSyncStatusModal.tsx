@@ -157,7 +157,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
       icon: Plane,
       accent: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20',
       local: records.length,
-      cloud: cloudStats?.recordsCount ?? '-',
+      cloud: isLoadingStats ? '...' : (cloudStats ? cloudStats.recordsCount : records.length),
       pending: pendingRecords.length,
       synced: isOnline && cloudStats ? records.length === cloudStats.recordsCount && pendingRecords.length === 0 : isCloudSynced
     },
@@ -167,7 +167,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
       icon: Truck,
       accent: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
       local: tempRecords.length,
-      cloud: cloudStats?.tempRecordsCount ?? '-',
+      cloud: isLoadingStats ? '...' : (cloudStats ? cloudStats.tempRecordsCount : tempRecords.length),
       pending: 0,
       synced: isOnline && cloudStats ? tempRecords.length === cloudStats.tempRecordsCount : isCloudSynced
     },
@@ -177,7 +177,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
       icon: Database,
       accent: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
       local: masterData.length,
-      cloud: cloudStats?.masterDataCount ?? '-',
+      cloud: isLoadingStats ? '...' : (cloudStats ? cloudStats.masterDataCount : masterData.length),
       pending: 0,
       synced: isOnline && cloudStats ? masterData.length === cloudStats.masterDataCount : isCloudSynced
     },
@@ -187,7 +187,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
       icon: Layers,
       accent: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
       local: vehicleSummaries.length,
-      cloud: cloudStats?.vehicleSummariesCount ?? '-',
+      cloud: isLoadingStats ? '...' : (cloudStats ? cloudStats.vehicleSummariesCount : vehicleSummaries.length),
       pending: 0,
       synced: isOnline && cloudStats ? vehicleSummaries.length === cloudStats.vehicleSummariesCount : isCloudSynced
     },
@@ -197,7 +197,7 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
       icon: FileSpreadsheet,
       accent: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
       local: dossierHistory.length,
-      cloud: cloudStats?.dossierHistoryCount ?? '-',
+      cloud: isLoadingStats ? '...' : (cloudStats ? cloudStats.dossierHistoryCount : dossierHistory.length),
       pending: 0,
       synced: isOnline && cloudStats ? dossierHistory.length === cloudStats.dossierHistoryCount : isCloudSynced
     },
@@ -207,11 +207,11 @@ export const CloudSyncStatusModal: React.FC<CloudSyncStatusModalProps> = ({
       icon: ShieldAlert,
       accent: 'text-rose-400 bg-rose-500/10 border-rose-500/20',
       local: watchList.length,
-      cloud: cloudStats?.watchListCount ?? '-',
+      cloud: isLoadingStats ? '...' : (cloudStats ? cloudStats.watchListCount : watchList.length),
       pending: 0,
       synced: isOnline && cloudStats ? watchList.length === cloudStats.watchListCount : isCloudSynced
     }
-  ], [records, tempRecords, masterData, vehicleSummaries, dossierHistory, watchList, cloudStats, pendingRecords, isOnline, isCloudSynced]);
+  ], [records, tempRecords, masterData, vehicleSummaries, dossierHistory, watchList, cloudStats, pendingRecords, isOnline, isCloudSynced, isLoadingStats]);
 
   if (!isOpen) return null;
 

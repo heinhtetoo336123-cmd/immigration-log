@@ -65,6 +65,11 @@ export interface ImmRecord {
   updatedAt?: string;
   serverSyncedAt?: string;
   createdDevice?: string;
+  _version?: number;
+  _updatedAt?: string;
+  _deviceId?: string;
+  _updatedBy?: string;
+  _conflictDoc?: ImmRecord;
 }
 
 export interface MasterItem {
@@ -75,9 +80,30 @@ export interface MasterItem {
   updatedAt?: string;
   syncStatus?: 'pending_sync' | 'upload_failed' | 'synced';
   serverSyncedAt?: string;
+  _version?: number;
+  _updatedAt?: string;
+  _deviceId?: string;
+  _updatedBy?: string;
+  _conflictDoc?: MasterItem;
 }
 
-export type Tab = 'entry' | 'data' | 'movement' | 'stillIn' | 'daily' | 'master' | 'tableOutput' | 'customReport' | 'individualSearch' | 'alarm' | 'telegraph' | 'watchList' | 'info' | 'auditLog';
+export interface DeletedRecord {
+  id: string;
+  originalCollection: 'records' | 'tempRecords' | 'masterData' | 'watchList' | 'dossierHistory' | 'vehicleSummaries';
+  originalId: number | string;
+  originalData: any;
+  title: string;
+  subtitle?: string;
+  deletedAt: string;
+  deletedBy: string;
+  deletedByRole?: string;
+  deviceId?: string;
+  reason?: string;
+  restoredAt?: string;
+  restoredBy?: string;
+}
+
+export type Tab = 'entry' | 'data' | 'movement' | 'stillIn' | 'daily' | 'master' | 'tableOutput' | 'customReport' | 'individualSearch' | 'alarm' | 'telegraph' | 'watchList' | 'info' | 'auditLog' | 'recycleBin';
 
 export interface WatchListPerson {
   id: string;

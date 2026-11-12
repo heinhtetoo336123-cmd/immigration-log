@@ -1,6 +1,0 @@
-{
-  "summary":  "Implementation plan for direct collection cloud data fetching and live item counting on the default Firestore database.",
-  "updatedAt":  "2026-10-25T10:10:19.286684076Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

@@ -8,7 +8,8 @@ import {
   collection, 
   getDocs,
   deleteDoc,
-  updateDoc
+  updateDoc,
+  setLogLevel
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import config from '../../firebase-applet-config.json';
@@ -27,6 +28,11 @@ export const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 
+// Mute non-fatal Firestore network warning logs in console
+try {
+  setLogLevel('error');
+} catch {}
+
 // LocalStorage Collection Key Mapping for Offline Fallback
 export const LOCAL_STORAGE_COLLECTIONS: Record<string, string> = {
   records: 'imm_records_react',
@@ -37,6 +43,7 @@ export const LOCAL_STORAGE_COLLECTIONS: Record<string, string> = {
   watchList: 'imm_watchlist_records_v1',
   activityLogs: 'imm_activity_logs_v1',
   activeSessions: 'imm_pwa_device_sessions',
+  deletedRecords: 'imm_deleted_records_v1',
 };
 
 export const getFromLocalStorageFallback = <T = any>(collectionName: string): T[] | null => {
@@ -73,7 +80,7 @@ export const setFirestoreUnavailable = (val: boolean) => {
 
 export const checkIsFirestoreUnavailable = (): boolean => isFirestoreUnavailable;
 
-// Safe error detection helper: matches connection and offline errors
+// Safe error detection helper: matches connection, unavailable, and offline errors
 export const isOfflineOrNetworkError = (err: any): boolean => {
   if (!err) return false;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
@@ -81,7 +88,11 @@ export const isOfflineOrNetworkError = (err: any): boolean => {
   const msg = String(err?.message || err || '').toLowerCase();
   return (
     code.includes('offline') ||
+    code.includes('unavailable') ||
     msg.includes('client is offline') ||
+    msg.includes('unavailable') ||
+    msg.includes('could not reach cloud firestore') ||
+    msg.includes('connection failed') ||
     msg.includes('failed to get document because the client is offline')
   );
 };
@@ -625,13 +636,31 @@ export const extractCountFromFirestoreDoc = (data: any, collectionName?: string)
   return items.length;
 };
 
-export const fetchCloudCollectionStats = async (force: boolean = false): Promise<CloudStats | null> => {
+const getFallbackCount = (colName: string): number => {
+  const items = getFromLocalStorageFallback(colName);
+  return items && Array.isArray(items) ? items.length : 0;
+};
+
+export const fetchCloudCollectionStats = async (force: boolean = false): Promise<CloudStats> => {
   if (force) {
     isFirestoreUnavailable = false;
   }
+
+  const fallbackResult: CloudStats = {
+    recordsCount: getFallbackCount('records'),
+    tempRecordsCount: getFallbackCount('tempRecords'),
+    masterDataCount: getFallbackCount('masterData'),
+    vehicleSummariesCount: getFallbackCount('vehicleSummaries'),
+    dossierHistoryCount: getFallbackCount('dossierHistory'),
+    watchListCount: getFallbackCount('watchList'),
+    metadata: {},
+    lastUpdated: new Date().toISOString()
+  };
+
   if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return null;
+    return fallbackResult;
   }
+
   try {
     const cols = ['records', 'tempRecords', 'masterData', 'vehicleSummaries', 'dossierHistory', 'watchList'];
     const counts: Record<string, number> = {};
@@ -648,7 +677,7 @@ export const fetchCloudCollectionStats = async (force: boolean = false): Promise
         const data = snap.data();
         counts[colName] = extractCountFromFirestoreDoc(data, colName);
       } else {
-        counts[colName] = 0;
+        counts[colName] = getFallbackCount(colName);
       }
     }
 
@@ -667,12 +696,12 @@ export const fetchCloudCollectionStats = async (force: boolean = false): Promise
     }
 
     const resultStats: CloudStats = {
-      recordsCount: counts['records'] || 0,
-      tempRecordsCount: counts['tempRecords'] || 0,
-      masterDataCount: counts['masterData'] || 0,
-      vehicleSummariesCount: counts['vehicleSummaries'] || 0,
-      dossierHistoryCount: counts['dossierHistory'] || 0,
-      watchListCount: counts['watchList'] || 0,
+      recordsCount: counts['records'] ?? getFallbackCount('records'),
+      tempRecordsCount: counts['tempRecords'] ?? getFallbackCount('tempRecords'),
+      masterDataCount: counts['masterData'] ?? getFallbackCount('masterData'),
+      vehicleSummariesCount: counts['vehicleSummaries'] ?? getFallbackCount('vehicleSummaries'),
+      dossierHistoryCount: counts['dossierHistory'] ?? getFallbackCount('dossierHistory'),
+      watchListCount: counts['watchList'] ?? getFallbackCount('watchList'),
       metadata: meta || {},
       lastUpdated: meta?.records || new Date().toISOString()
     };
@@ -682,7 +711,7 @@ export const fetchCloudCollectionStats = async (force: boolean = false): Promise
     if (isOfflineOrNetworkError(err)) {
       isFirestoreUnavailable = true;
     }
-    return null;
+    return fallbackResult;
   }
 };
 
@@ -1130,3 +1159,137 @@ export const subscribeToDeviceSessions = (onUpdate: (sessions: any[]) => void) =
     return () => {};
   }
 };
+
+// --- SOFT DELETE & RECYCLE BIN MANAGEMENT ---
+
+export const softDeleteRecord = async (
+  collectionName: 'records' | 'tempRecords' | 'masterData' | 'watchList' | 'dossierHistory' | 'vehicleSummaries',
+  item: any,
+  officerName: string,
+  officerRole?: string,
+  reason?: string
+): Promise<any> => {
+  try {
+    const localDeleted = getFromLocalStorageFallback<any>('deletedRecords') || [];
+    const activeDeviceId = (typeof localStorage !== 'undefined' && localStorage.getItem('imm_pwa_device_id')) || 'local_device';
+    
+    let title = 'Deleted Entry';
+    if (item.fullname) {
+      title = `${item.fullname} (${item.passport || ''})`;
+    } else if (item.name) {
+      title = `${item.name} [${item.type || 'Master'}]`;
+    } else if (item.passport) {
+      title = `Passport: ${item.passport}`;
+    } else if (item.dossierTitle) {
+      title = item.dossierTitle;
+    } else if (item.letterNo) {
+      title = `WatchList Letter: ${item.letterNo}`;
+    } else if (item.vehicleNo) {
+      title = `Vehicle: ${item.vehicleNo} (${item.date || ''})`;
+    }
+
+    const deletedEntry = {
+      id: `del_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      originalCollection: collectionName,
+      originalId: item.id || item.passport || item.name || Date.now(),
+      originalData: item,
+      title,
+      subtitle: item.timestamp || item.updatedAt || item.createdAt || new Date().toLocaleString(),
+      deletedAt: new Date().toISOString(),
+      deletedBy: officerName || 'Duty Officer',
+      deletedByRole: officerRole || 'Editor',
+      deviceId: activeDeviceId,
+      reason: reason || 'Manual Delete'
+    };
+
+    const nextDeleted = [deletedEntry, ...localDeleted.filter((d: any) => d.id !== deletedEntry.id)];
+    saveToLocalStorageFallback('deletedRecords', nextDeleted);
+
+    // Save to Firestore appData/deletedRecords doc
+    if (typeof navigator !== 'undefined' && navigator.onLine && !isFirestoreUnavailable && !isQuotaExhausted) {
+      try {
+        await ensureAuthenticated();
+        const docRef = doc(db, 'appData', 'deletedRecords');
+        await setDoc(docRef, { items: nextDeleted, updatedAt: new Date().toISOString() }, { merge: true });
+      } catch (err: any) {
+        console.warn("softDeleteRecord cloud save warning:", err);
+      }
+    }
+
+    return deletedEntry;
+  } catch (err) {
+    console.error("softDeleteRecord failed:", err);
+    return null;
+  }
+};
+
+export const fetchDeletedRecords = async (): Promise<any[]> => {
+  const localFallback = getFromLocalStorageFallback<any>('deletedRecords') || [];
+  if (isFirestoreUnavailable || isQuotaExhausted || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return localFallback;
+  }
+
+  try {
+    await ensureAuthenticated();
+    const docRef = doc(db, 'appData', 'deletedRecords');
+    const snapshot = await getDoc(docRef);
+    if (snapshot && snapshot.exists()) {
+      const data = snapshot.data();
+      if (data && Array.isArray(data.items)) {
+        saveToLocalStorageFallback('deletedRecords', data.items);
+        return data.items;
+      }
+    }
+    return localFallback;
+  } catch (err) {
+    console.warn("fetchDeletedRecords warning:", err);
+    return localFallback;
+  }
+};
+
+export const restoreDeletedRecord = async (deletedRecordId: string, officerName: string): Promise<any | null> => {
+  try {
+    const deletedList = getFromLocalStorageFallback<any>('deletedRecords') || [];
+    const targetIndex = deletedList.findIndex((d: any) => d.id === deletedRecordId);
+    if (targetIndex === -1) return null;
+
+    const target = deletedList[targetIndex];
+    const restoredItem = {
+      ...target.originalData,
+      syncStatus: 'pending_sync',
+      updatedAt: new Date().toISOString(),
+      restoredAt: new Date().toISOString(),
+      restoredBy: officerName || 'Duty Officer'
+    };
+
+    // Remove from deleted list
+    const updatedDeletedList = deletedList.filter((d: any) => d.id !== deletedRecordId);
+    saveToLocalStorageFallback('deletedRecords', updatedDeletedList);
+
+    // Restore to primary local collection
+    const primaryLocalList = getFromLocalStorageFallback<any>(target.originalCollection) || [];
+    const restoredPrimaryList = [restoredItem, ...primaryLocalList.filter((x: any) => (x.id !== restoredItem.id && x.passport !== restoredItem.passport && x.name !== restoredItem.name))];
+    saveToLocalStorageFallback(target.originalCollection, restoredPrimaryList);
+
+    // Sync to Firestore
+    if (typeof navigator !== 'undefined' && navigator.onLine && !isFirestoreUnavailable && !isQuotaExhausted) {
+      try {
+        await ensureAuthenticated();
+        // Update deletedRecords
+        const delRef = doc(db, 'appData', 'deletedRecords');
+        await setDoc(delRef, { items: updatedDeletedList, updatedAt: new Date().toISOString() }, { merge: true });
+        
+        // Save restored collection
+        await saveCollectionToFirestore(target.originalCollection, restoredPrimaryList, true, false);
+      } catch (err) {
+        console.warn("restoreDeletedRecord cloud sync warning:", err);
+      }
+    }
+
+    return { item: restoredItem, collection: target.originalCollection };
+  } catch (err) {
+    console.error("restoreDeletedRecord error:", err);
+    return null;
+  }
+};
+
